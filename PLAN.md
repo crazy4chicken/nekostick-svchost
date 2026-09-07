@@ -45,8 +45,8 @@ nekostick-svchost/
 ├── Directory.Build.props           # Nullable=enable, ImplicitUsings, LangVersion, 警告级别
 ├── Directory.Packages.props        # CPM: Nekolla.Nekostick.Contracts 1.3.2, YamlDotNet, xunit 等
 ├── src/
-│   └── Nekostick.Svchost/
-│       ├── Nekostick.Svchost.csproj
+│   └── Nekolla.Nekostick.ServiceHost/
+│       ├── Nekolla.Nekostick.ServiceHost.csproj
 │       ├── manifest.json           # 构建时复制到输出目录
 │       ├── SvchostEntry.cs         # IExtensionEntry 入口
 │       ├── Settings/               # settings JSON 模型与读写
@@ -55,13 +55,13 @@ nekostick-svchost/
 │       ├── Api/                    # 管理 API 流式 handler + 路由 + 认证
 │       └── Webui/                  # WebUI 流式 handler (嵌资源)
 ├── tests/
-│   └── Nekostick.Svchost.UnitTests/
+│   └── Nekolla.Nekostick.ServiceHost.UnitTests/
 ├── webui/                          # Vue 3 + Vite + naive-ui
 └── deploy/                         # 本地部署脚本 (复制 dll+manifest 到 host extensions/)
 ```
 
-- 程序集名 `Nekostick.Svchost`, 扩展 id `nekostick.svchost` (小写, 符合 manifest id 规则).
-- `manifest.json`: `schemaVersion: 1`, `id: nekostick.svchost`, `entryAssembly: Nekostick.Svchost.dll`, `entryType: Nekostick.Svchost.SvchostEntry`, `dependencies: []`, `requiredHostApiVersion: ">=1.3.2 <2.0.0"`.
+- 程序集名 `Nekolla.Nekostick.ServiceHost`, 扩展 id `nekostick.svchost` (小写, 符合 manifest id 规则).
+- `manifest.json`: `schemaVersion: 1`, `id: nekostick.svchost`, `entryAssembly: Nekolla.Nekostick.ServiceHost.dll`, `entryType: Nekolla.Nekostick.ServiceHost.SvchostEntry`, `dependencies: []`, `requiredHostApiVersion: ">=1.3.2 <2.0.0"`.
 
 ## 3. Settings 模型与 bootstrap 模式
 
@@ -74,6 +74,7 @@ Settings 是 extension settings 里的单个 JSON 文档 (`SettingsJson`), `sche
   "configs": {
     "<configName>": {
       "yaml": "<原始 YAML 文本>",
+      "stopped": [],
       "lock": { }
     }
   }
@@ -208,12 +209,12 @@ services:
 | `POST /svchost/api/services/{config}/{service}/stop` | 是 | `Enabled=false` + reconcile |
 | `POST /svchost/api/services/{config}/{service}/restart` | 是 | disable→reconcile→enable→reconcile, 响应中注明该语义 |
 
-错误格式统一 `{ "error": { "code": "...", "message": "..." } }`: 401 未认证 / 403 状态不允许 (如非 bootstrap 调 bootstrap 端点) / 404 配置不存在 / 409 并发冲突重试耗尽 / 422 配置校验失败 / 502 来源拉取失败.
+错误格式: **请求级失败**统一 `{ "error": { "code": "...", "message": "..." } }` envelope: 401 未认证 / 403 状态不允许 (如非 bootstrap 调 bootstrap 端点) / 404 配置不存在 / 409 并发冲突重试耗尽 / 413 请求体超限 / 422 YAML 校验失败 (仅此一种 422). **reconcile 级失败** (含来源拉取失败, hash 不匹配, 单个服务调和失败) 一律返回 **HTTP 200 + SyncReportPayload**: `{ "name"?, "succeeded": false, "dataDirectoryAvailable", "completedAt", "services": [{ "name", "succeeded", "error"?, "errorKind"? }], "error"?, "errorKind"? }`, 其中 `errorKind` ∈ `source | reconcile | lock`; DELETE 在删除已发生后恒为 200 `{ "deleted": true, "name", "report" }`; 服务操作恒为 200 `{ "action", "config", "service", "succeeded", "message", "asynchronous": true }`. (2026-09-07 契约修订: 消除「两种 422 形状」二义性, 非 200 只留给请求级失败.)
 
 ## 7. WebUI (`/svchost`)
 
 - `webui/` 目录: **Vue 3 + Vite + TypeScript + naive-ui**, pnpm 管理, `vite-plugin-singlefile` 产出单个自包含 `dist/index.html`.
-- 嵌入: csproj 中 `<EmbeddedResource Include="..\..\webui\dist\index.html" LogicalName="Nekostick.Svchost.webui.index.html" />`; MSBuild 增量 target (Inputs=webui/src 等, Outputs=dist/index.html) 自动跑 `pnpm install --frozen-lockfile` + `pnpm build`; 环境变量 `SVCHOST_SKIP_WEBUI_BUILD=1` 可跳过 (CI/无 node 环境用预构建产物).
+- 嵌入: csproj 中 `<EmbeddedResource Include="..\..\webui\dist\index.html" LogicalName="Nekolla.Nekostick.ServiceHost.webui.index.html" />`; MSBuild 增量 target (Inputs=webui/src 等, Outputs=dist/index.html) 自动跑 `pnpm install --frozen-lockfile` + `pnpm build`; 环境变量 `SVCHOST_SKIP_WEBUI_BUILD=1` 可跳过 (CI/无 node 环境用预构建产物).
 -  serving: 流式 handler `nekostick.svchost.webui`; `GET /svchost` 及 `/svchost` 下非 `/api` 路径 → 每次请求新开 manifest resource stream 作为 `ExtensionStreamingResponse` 的 `BodyStream` (位置在 0, host 从当前位置读), `Content-Type: text/html; charset=utf-8`, `Cache-Control: no-cache`.
 - 页面行为:
   - 首屏 `GET /svchost/api/status`; `bootstrap: true` → naive-ui `n-alert` 强提醒 + 引导流程: 输入 host 日志里的一次性 key + 设置新 key (`POST /bootstrap/key`), 成功后把新 key 存 `localStorage`, 之后所有请求带 `X-Api-Key`.
@@ -232,7 +233,7 @@ services:
 
 `StopAsync`: 注销 handler (`TryUnregisterHandler`), 取消后台任务, 等待进行中的 reconcile 退出 (带超时). 管理的全局服务/路由**不**随扩展停止而删除 (它们是 host 全局资产, 配置仍在; 如需清理由用户走 API).
 
-## 9. 测试计划 (`tests/Nekostick.Svchost.UnitTests`, xunit)
+## 9. 测试计划 (`tests/Nekolla.Nekostick.ServiceHost.UnitTests`, xunit)
 
 - YAML 解析/校验: 合法模型, 未知字段拒绝, 双来源冲突, http url 拒绝, health/route 条件校验.
 - lock 语义: url 不变零网络路径 (mock HttpClient), artifact 损坏重下 + hash 不匹配报错, 本地来源漂移重锁.
@@ -256,6 +257,8 @@ services:
 ## 11. 已知限制 (设计内, 非缺陷)
 
 - 全局服务无 metadata 字段: 孤儿服务 (lock 丢失但服务残留) 无法自动清理, 只能按 lock 追踪; 路由有 `MetadataJson` 双保险.
+- 服务从 YAML 移除后, 其 artifact 文件残留在 data 子目录 (仅整配置 DELETE 清理目录); 重复编辑配置会缓慢占用磁盘 (oracle F9, 暂缓).
+- Replace 成功但 lock 写失败的极端窗口下, 受影响来源的 drift 检测会失效一代 (lock Source 重置为 null, 下次 sync 作为新来源重锁); 该路径返回 `LockPersistFailed` 并上报 Degraded.
 - restart 语义为 disable/enable 两步, 有秒级窗口; 平台无全局 restart API.
 - readonly 探测每次启动使 settings version +1 (内容不变), 用户已确认接受.
 - `ReplaceAsync` 后服务启停是 host 监督器的异步行为, API 返回成功 ≠ 进程已就位; 运行态以 `GET /services` 的监督遥测为准.
