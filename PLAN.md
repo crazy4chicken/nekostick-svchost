@@ -266,3 +266,4 @@ The 1.3.3 hardening closes the former generation-guarded lock-reset, settings-ev
 - A local `path` source cannot be restored on a fresh node. The source file must be available on that node when it first resolves the configuration.
 - A mutable URL/path source without a declared `sha256` remains mutable across nodes. Set per-config `strictSources: true` to reject such declarations; the default (`false` or absent) accepts them and reports a non-fatal warning.
 - Global `ServiceConfiguration` stores node-local absolute paths. A missing artifact is handled gracefully as host `Waiting`, with backoff retry and an svchost `ResumeAsync` nudge for managed services; a structural fix requires host/content-store support.
+- Bootstrap keys are per-node in-memory by design (never persisted): on a multi-node deployment each node accepts only the key printed in its own log until a permanent key is set; the permanent key then converges across nodes via settings-change events.
