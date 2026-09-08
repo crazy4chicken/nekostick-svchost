@@ -14,7 +14,10 @@ public sealed partial class Reconciler
         IEnumerable<Guid> managedServiceIds,
         IEnumerable<Guid> managedRouteIds,
         IEnumerable<ServiceConfiguration> desiredServices,
-        IEnumerable<RouteConfiguration> desiredRoutes)
+        IEnumerable<RouteConfiguration> desiredRoutes,
+        IEnumerable<Guid>? preservedServiceIds = null,
+        IEnumerable<Guid>? preservedRouteIds = null,
+        IEnumerable<Guid>? configuredLockServiceIds = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(managedServiceIds);
@@ -24,13 +27,19 @@ public sealed partial class Reconciler
 
         var managedServices = managedServiceIds.ToHashSet();
         var desiredServiceArray = desiredServices.ToImmutableArray();
+        var desiredServiceIds = desiredServiceArray.Select(service => service.Id).ToHashSet();
         foreach (var desired in desiredServiceArray)
         {
             managedServices.Add(desired.Id);
         }
 
+        var preservedServices = preservedServiceIds?.ToHashSet() ?? new HashSet<Guid>();
+        var lockServiceIds = configuredLockServiceIds?.ToHashSet() ?? managedServices;
+        var orphanSweep = FindOrphanSweep(snapshot, lockServiceIds, desiredServiceIds);
         var services = snapshot.Services
-            .Where(service => !managedServices.Contains(service.Id))
+            .Where(service =>
+                (!managedServices.Contains(service.Id) || preservedServices.Contains(service.Id)) &&
+                !orphanSweep.ServiceIds.Contains(service.Id))
             .Concat(desiredServiceArray)
             .ToImmutableArray();
 
@@ -41,12 +50,28 @@ public sealed partial class Reconciler
             managedRoutes.Add(desired.Id);
         }
 
+        var preservedRoutes = preservedRouteIds?.ToHashSet() ?? new HashSet<Guid>();
+        foreach (var route in snapshot.Routes)
+        {
+            if (route.Target is MicroserviceRouteTargetConfiguration microservice &&
+                preservedServices.Contains(microservice.ServiceId) &&
+                IsOwnedRoute(route.MetadataJson))
+            {
+                preservedRoutes.Add(route.Id);
+            }
+        }
+
         var routes = snapshot.Routes
             .Where(route =>
-                !managedRoutes.Contains(route.Id) &&
-                !IsOwnedRoute(route.MetadataJson))
+                preservedRoutes.Contains(route.Id) ||
+                (!managedRoutes.Contains(route.Id) && !IsOwnedRoute(route.MetadataJson)))
             .Concat(desiredRouteArray)
             .ToImmutableArray();
+
+        foreach (var note in orphanSweep.Notes)
+        {
+            System.Diagnostics.Debug.WriteLine($"{Owner}: {note}");
+        }
 
         return new ConfigurationChangeSet(
             snapshot.GlobalSettings,
@@ -255,6 +280,65 @@ public sealed partial class Reconciler
 
         public int GetHashCode(HeaderRewriteConfiguration obj) =>
             HashCode.Combine(obj.Operation, obj.Name, obj.Value);
+    }
+
+    private sealed record OrphanSweep(
+        HashSet<Guid> ServiceIds,
+        HashSet<Guid> RouteIds,
+        ImmutableArray<string> Notes);
+
+    private static OrphanSweep FindOrphanSweep(
+        HostConfigurationSnapshot snapshot,
+        IReadOnlySet<Guid> lockServiceIds,
+        IReadOnlySet<Guid> desiredServiceIds)
+    {
+        var candidates = new HashSet<Guid>();
+        foreach (var route in snapshot.Routes)
+        {
+            if (!IsOwnedRoute(route.MetadataJson) ||
+                route.Target is not MicroserviceRouteTargetConfiguration microservice ||
+                lockServiceIds.Contains(microservice.ServiceId) ||
+                desiredServiceIds.Contains(microservice.ServiceId))
+            {
+                continue;
+            }
+
+            candidates.Add(microservice.ServiceId);
+        }
+
+        var orphanServices = new HashSet<Guid>();
+        var orphanRoutes = new HashSet<Guid>();
+        var notes = ImmutableArray.CreateBuilder<string>();
+        foreach (var serviceId in candidates)
+        {
+            if (!snapshot.Services.Any(service => service.Id == serviceId))
+            {
+                continue;
+            }
+
+            var references = snapshot.Routes
+                .Where(route =>
+                    route.Target is MicroserviceRouteTargetConfiguration microservice &&
+                    microservice.ServiceId == serviceId)
+                .ToArray();
+            var ownedReferences = references.Where(route => IsOwnedRoute(route.MetadataJson)).ToArray();
+            if (ownedReferences.Length == 0 || references.Any(route => !IsOwnedRoute(route.MetadataJson)))
+            {
+                // A non-svchost or otherwise unmanaged route protects the service.
+                continue;
+            }
+
+            orphanServices.Add(serviceId);
+            foreach (var route in ownedReferences)
+            {
+                orphanRoutes.Add(route.Id);
+            }
+
+            var note = $"Swept orphan service {serviceId} and {ownedReferences.Length} svchost-owned route(s).";
+            notes.Add(note);
+        }
+
+        return new OrphanSweep(orphanServices, orphanRoutes, notes.ToImmutable());
     }
 
     private static bool IsOwnedRoute(string metadataJson)

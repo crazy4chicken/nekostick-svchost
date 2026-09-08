@@ -96,7 +96,9 @@ public sealed partial class SvchostApiHandler
                 {
                     ["name"] = service.ServiceName,
                     ["succeeded"] = service.Succeeded,
-                    ["error"] = service.Error
+                    ["error"] = service.Error,
+                    ["warnings"] = service.Warnings.IsDefaultOrEmpty ? Array.Empty<string>() : service.Warnings.ToArray(),
+                    ["nodeLocal"] = service.NodeLocal
                 };
                 if (service.FailureCode.HasValue)
                 {
@@ -112,7 +114,8 @@ public sealed partial class SvchostApiHandler
             ["succeeded"] = report.Succeeded,
             ["dataDirectoryAvailable"] = report.DataDirectoryAvailable,
             ["completedAt"] = report.CompletedAt,
-            ["services"] = services
+            ["services"] = services,
+            ["notes"] = report.Notes.IsDefaultOrEmpty ? Array.Empty<string>() : report.Notes.ToArray()
         };
         if (configName is not null)
         {

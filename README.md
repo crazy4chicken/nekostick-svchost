@@ -31,6 +31,7 @@
 ### 配置文件示例
 
 ```yaml
+strictSources: false                                           # set true to reject URL/path sources without sha256
 services:
   my-api:
     source:
@@ -42,6 +43,13 @@ services:
     health: { type: http, path: /healthz, timeout: 5s }
     route: { prefix: /api/my, strip: true }
 ```
+
+## Multi-node deployment
+
+- Deploy the same svchost build on every node. The host quarantines node-local content drift when an extension's pinned content hash does not match.
+- Declare `sha256` for every URL/path source, or set `strictSources: true` at the root of each config. Without either, sync accepts the mutable source and reports a warning.
+- Missing local prerequisites put a service in `Waiting`; the host retries with backoff and auto-recovers, while svchost can nudge managed Waiting services through `ResumeAsync`.
+- Artifacts are node-local: every node resolves sources independently, and a `path` source must exist at that path on every node. A fresh node cannot restore a local path source from another node.
 
 在 WebUI 里新建配置、粘贴 YAML 即可; 也可直接调 API (`X-Api-Key` 头认证):
 

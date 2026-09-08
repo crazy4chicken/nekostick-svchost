@@ -20,4 +20,7 @@ public sealed record SyncReport(
 
     /// <summary>Gets a domain-specific reconciliation error, when applicable.</summary>
     public SyncErrorCode? FailureCode { get; init; }
+
+    /// <summary>Gets additive notes such as orphan services swept from the global snapshot.</summary>
+    public ImmutableArray<string> Notes { get; init; } = ImmutableArray<string>.Empty;
 }

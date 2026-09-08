@@ -11,6 +11,9 @@ namespace Nekolla.Nekostick.ServiceHost;
 public sealed partial class SvchostEntry : IExtensionEntry
 {
     private static readonly Task CompletedTask = Task.CompletedTask;
+    private static readonly HostApiVersion MinimumHostApiVersion = new(1, 3, 3);
+    private const int UnsettledDriftRetryIntervalTicks = 4;
+    private static readonly TimeSpan DriftCheckInterval = TimeSpan.FromSeconds(60);
     private readonly object _lifecycleGate = new();
     private readonly object _debounceGate = new();
     private readonly object _reconcileGate = new();
@@ -18,11 +21,18 @@ public sealed partial class SvchostEntry : IExtensionEntry
     private IExtensionHostBridge13? _bridge;
     private IExtensionRegistration? _registration;
     private SettingsStore? _settingsStore;
+    private ApiKeyService? _apiKeyService;
     private Reconciler? _reconciler;
     private SvchostApiHandler? _apiHandler;
     private CancellationTokenSource? _lifetimeCancellation;
     private CancellationTokenSource? _debounceCancellation;
+    private PeriodicTimer? _driftTimer;
+    private Task? _driftTask;
     private long? _lastSelfSettledSettingsVersion;
+    private long? _lastReconcilerConsumedSettingsVersion;
+    private long? _lastObservedPublishedConfigurationVersion;
+    private bool _reconcileUnsettled;
+    private int _unsettledDriftTickCount;
     private bool _startupDegraded;
     private TaskCompletionSource<bool> _reconcileIdle = CreateCompletedSource();
     private int _activeReconciles;
@@ -43,7 +53,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
         }
 
         var host = context.Host;
-        if (!ExtensionAbi.IsApi13Supported(host.ApiVersion))
+        if (!ExtensionAbi.IsCompatible(MinimumHostApiVersion, host.ApiVersion))
         {
             host.Logger.Report(ExtensionLogLevel.Warning, "api-13-unsupported");
             return;
@@ -77,9 +87,16 @@ public sealed partial class SvchostEntry : IExtensionEntry
             _bridge = bridge;
             _registration = context.Registration;
             _settingsStore = settingsStore;
+            _apiKeyService = apiKeyService;
             _lifetimeCancellation = new CancellationTokenSource();
             _debounceCancellation = null;
+            _driftTimer = null;
+            _driftTask = null;
             _lastSelfSettledSettingsVersion = null;
+            _lastReconcilerConsumedSettingsVersion = null;
+            _lastObservedPublishedConfigurationVersion = null;
+            _reconcileUnsettled = false;
+            _unsettledDriftTickCount = 0;
             _startupDegraded = false;
             _reconcileIdle = CreateCompletedSource();
             _activeReconciles = 0;
@@ -110,7 +127,18 @@ public sealed partial class SvchostEntry : IExtensionEntry
             bridge.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "settings-missing"));
             return;
         }
-
+        var staleRoutesRemoved = await RemoveStaleHandlerRoutesAsync(
+                bridge,
+                initialization.Settings.Routes,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!staleRoutesRemoved)
+        {
+            MarkStartupDegraded();
+            bridge.Logger.Report(ExtensionLogLevel.Warning, "handler-route-cleanup-failed");
+            bridge.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "handler-route-cleanup-failed"));
+            return;
+        }
 
         var composeParser = new ComposeFileParser();
         var reconciler = new Reconciler(
@@ -118,7 +146,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
             composeParser,
             new SourceResolver(),
             bridge.FullConfiguration,
-            bridge.DataDirectory);
+            bridge.DataDirectory,
+            bridge.Supervisor);
         var apiHandler = new SvchostApiHandler(
             apiKeyService,
             settingsStore,
@@ -199,6 +228,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
         {
             bridge.Status.Report(new ExtensionStatus(ExtensionStatusKind.Healthy, "ready"));
         }
+        ObserveHostConfigurationVersion(bridge);
+        StartDriftTimer();
     }
 
     /// <inheritdoc />
@@ -209,6 +240,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
         SvchostApiHandler? apiHandler;
         CancellationTokenSource? lifetimeCancellation;
         CancellationTokenSource? debounceCancellation;
+        PeriodicTimer? driftTimer;
+        Task driftTask;
         Task idleTask;
 
         lock (_lifecycleGate)
@@ -219,15 +252,25 @@ public sealed partial class SvchostEntry : IExtensionEntry
             lifetimeCancellation = _lifetimeCancellation;
             idleTask = GetReconcileIdleTask();
             debounceCancellation = _debounceCancellation;
+            driftTimer = _driftTimer;
+            driftTask = _driftTask ?? CompletedTask;
             _bridge = null;
             _registration = null;
             _settingsStore = null;
+            _apiKeyService = null;
             _reconciler = null;
             _apiHandler = null;
             _lifetimeCancellation = null;
             _debounceCancellation = null;
+            _driftTimer = null;
+            _driftTask = null;
             _lastSelfSettledSettingsVersion = null;
-        } 
+            _lastReconcilerConsumedSettingsVersion = null;
+            _lastObservedPublishedConfigurationVersion = null;
+            _reconcileUnsettled = false;
+            _unsettledDriftTickCount = 0;
+        }
+
         if (bridge is null)
         {
             return;
@@ -237,11 +280,13 @@ public sealed partial class SvchostEntry : IExtensionEntry
         {
             lifetimeCancellation?.Cancel();
             debounceCancellation?.Cancel();
+            driftTimer?.Dispose();
         }
         catch (ObjectDisposedException)
         {
-            // A concurrently completing debounce may already have disposed its source.
+            // A concurrently completing debounce or timer may already be disposed.
         }
+
         apiHandler?.Cancel();
 
         if (registration is not null)
@@ -252,8 +297,9 @@ public sealed partial class SvchostEntry : IExtensionEntry
 
         try
         {
+            var stopTask = Task.WhenAll(idleTask, driftTask);
             var timeoutTask = Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
-            await Task.WhenAny(idleTask, timeoutTask).ConfigureAwait(false);
+            await Task.WhenAny(stopTask, timeoutTask).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

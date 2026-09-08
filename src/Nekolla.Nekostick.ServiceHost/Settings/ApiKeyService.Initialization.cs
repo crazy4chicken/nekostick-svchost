@@ -4,7 +4,7 @@ namespace Nekolla.Nekostick.ServiceHost.Settings;
 
 public sealed partial class ApiKeyService
 {
-    /// <summary>Runs the readonly probe and selects permanent or bootstrap authentication.</summary>
+    /// <summary>Reads settings and selects permanent, bootstrap, or read-only authentication.</summary>
     public async ValueTask<ApiKeyInitializationResult> InitializeAsync(
         CancellationToken cancellationToken = default)
     {
@@ -12,6 +12,27 @@ public sealed partial class ApiKeyService
 
         for (var attempt = 0; attempt < MaxProbeAttempts; attempt++)
         {
+            var hostInfo = _bridge.HostInfo;
+            if (!ReferenceEquals(hostInfo, ExtensionHostInfoSnapshot.Unavailable) &&
+                ((hostInfo.Readiness != ExtensionHostReadinessState.Ready &&
+                  hostInfo.Readiness != ExtensionHostReadinessState.Degraded) ||
+                 !hostInfo.DatabaseAvailable))
+            {
+                if (attempt + 1 < MaxProbeAttempts)
+                {
+                    await DelayBeforeRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                ReportDegraded("settings-unavailable");
+                return new ApiKeyInitializationResult(
+                    false,
+                    false,
+                    false,
+                    null,
+                    ConfigurationErrorCode.StorageUnavailable);
+            }
+
             var read = await _settingsStore.ReadSettingsAsync(cancellationToken).ConfigureAwait(false);
             if (!read.IsSuccess)
             {
@@ -27,38 +48,7 @@ public sealed partial class ApiKeyService
 
             var snapshot = read.Value!;
             var settings = snapshot.Settings;
-            ConfigurationWriteResult write;
-            if (settings is null)
-            {
-                settings = SvchostSettings.CreateInitial();
-                write = await _settingsStore.WriteSettingsAsync(
-                        snapshot.Version,
-                        settings,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                // This write intentionally sends the original string rather than a re-serialized model.
-                write = await _settingsStore.WriteRawSettingsAsync(
-                        snapshot.Version,
-                        snapshot.RawJson!,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
-            if (write.IsSuccess)
-            {
-                Activate(settings);
-                return new ApiKeyInitializationResult(
-                    true,
-                    false,
-                    IsBootstrap,
-                    settings,
-                    null);
-            }
-
-            if (HasError(write.Errors, ConfigurationErrorCode.Unsupported))
+            if (hostInfo.ReadOnly)
             {
                 SetReadonly(settings);
                 return new ApiKeyInitializationResult(
@@ -69,22 +59,97 @@ public sealed partial class ApiKeyService
                     ConfigurationErrorCode.Unsupported);
             }
 
-            if (HasError(write.Errors, ConfigurationErrorCode.StorageUnavailable) &&
-                attempt + 1 < MaxProbeAttempts)
+            if (settings is null)
             {
-                await DelayBeforeRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
-                continue;
+                var candidate = SvchostSettings.CreateInitial();
+                var write = await _settingsStore.WriteSettingsAsync(
+                        snapshot.Version,
+                        candidate,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (write.IsSuccess)
+                {
+                    // The write may have retried after a conflict and adopted another writer's
+                    // raw JSON. Always activate the settings currently persisted by the store.
+                    var adopted = await _settingsStore.ReadSettingsAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                    if (!adopted.IsSuccess)
+                    {
+                        if (HasError(adopted.Errors, ConfigurationErrorCode.StorageUnavailable) &&
+                            attempt + 1 < MaxProbeAttempts)
+                        {
+                            await DelayBeforeRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        ReportDegraded("settings-unavailable");
+                        return FailureResult(adopted.Errors);
+                    }
+
+                    settings = adopted.Value!.Settings;
+                    if (settings is null)
+                    {
+                        if (attempt + 1 < MaxProbeAttempts)
+                        {
+                            await DelayBeforeRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        ReportDegraded("settings-unavailable");
+                        return new ApiKeyInitializationResult(
+                            false,
+                            false,
+                            false,
+                            null,
+                            ConfigurationErrorCode.StorageUnavailable);
+                    }
+
+                    Activate(settings);
+                    return new ApiKeyInitializationResult(
+                        true,
+                        false,
+                        IsBootstrap,
+                        settings,
+                        null);
+                }
+
+                if (HasError(write.Errors, ConfigurationErrorCode.Unsupported))
+                {
+                    SetReadonly(candidate);
+                    return new ApiKeyInitializationResult(
+                        true,
+                        true,
+                        false,
+                        candidate,
+                        ConfigurationErrorCode.Unsupported);
+                }
+
+                if (HasError(write.Errors, ConfigurationErrorCode.StorageUnavailable) &&
+                    attempt + 1 < MaxProbeAttempts)
+                {
+                    await DelayBeforeRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (HasError(write.Errors, ConfigurationErrorCode.ConcurrencyConflict) &&
+                    attempt + 1 < MaxProbeAttempts)
+                {
+                    await DelayBeforeRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                ReportDegraded("settings-write-failed");
+                return FailureResult(write.Errors);
             }
 
-            if (HasError(write.Errors, ConfigurationErrorCode.ConcurrencyConflict) &&
-                attempt + 1 < MaxProbeAttempts)
-            {
-                await DelayBeforeRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            ReportDegraded("settings-write-failed");
-            return FailureResult(write.Errors);
+            Activate(settings);
+            return new ApiKeyInitializationResult(
+                true,
+                false,
+                IsBootstrap,
+                settings,
+                null);
         }
 
         ReportDegraded("settings-unavailable");

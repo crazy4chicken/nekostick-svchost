@@ -15,6 +15,7 @@ public sealed partial class Reconciler
     private readonly ComposeFileParser _composeFileParser;
     private readonly SourceResolver _sourceResolver;
     private readonly IExtensionFullConfigurationApi _fullConfiguration;
+    private readonly IExtensionSupervisorApi? _supervisor;
     private readonly string _dataDirectory;
     private readonly SemaphoreSlim _serializationGate = new(1, 1);
 
@@ -24,12 +25,14 @@ public sealed partial class Reconciler
         ComposeFileParser composeFileParser,
         SourceResolver sourceResolver,
         IExtensionFullConfigurationApi fullConfiguration,
-        string? dataDirectory = null)
+        string? dataDirectory = null,
+        IExtensionSupervisorApi? supervisor = null)
     {
         _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
         _composeFileParser = composeFileParser ?? throw new ArgumentNullException(nameof(composeFileParser));
         _sourceResolver = sourceResolver ?? throw new ArgumentNullException(nameof(sourceResolver));
         _fullConfiguration = fullConfiguration ?? throw new ArgumentNullException(nameof(fullConfiguration));
+        _supervisor = supervisor;
         _dataDirectory = dataDirectory ?? string.Empty;
     }
 

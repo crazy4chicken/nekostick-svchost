@@ -6,15 +6,19 @@ namespace Nekolla.Nekostick.ServiceHost.Compose;
 public sealed class ComposeFile
 {
     /// <summary>Creates a compose document.</summary>
-    public ComposeFile(IReadOnlyDictionary<string, ComposeService> services)
+    public ComposeFile(IReadOnlyDictionary<string, ComposeService> services, bool strictSources = false)
     {
         Services = services is null
             ? throw new ArgumentNullException(nameof(services))
             : services.ToImmutableDictionary(StringComparer.Ordinal);
+        StrictSources = strictSources;
     }
 
     /// <summary>Gets services keyed by their validated names.</summary>
     public ImmutableDictionary<string, ComposeService> Services { get; }
+
+    /// <summary>Gets whether URL and path sources must declare a SHA-256 digest.</summary>
+    public bool StrictSources { get; }
 }
 
 /// <summary>Describes one service in a compose document.</summary>
@@ -28,7 +32,8 @@ public sealed class ComposeService
         ComposeStartMode start = ComposeStartMode.Eager,
         ComposeRestartPolicy restart = ComposeRestartPolicy.OnFailure,
         ComposeHealthCheck? health = null,
-        ComposeRoute? route = null)
+        ComposeRoute? route = null,
+        IEnumerable<string>? warnings = null)
     {
         Source = source ?? throw new ArgumentNullException(nameof(source));
         Args = (args ?? Array.Empty<string>()).ToImmutableArray();
@@ -39,6 +44,7 @@ public sealed class ComposeService
         Restart = restart;
         Health = health ?? ComposeHealthCheck.ProcessDefault;
         Route = route;
+        Warnings = (warnings ?? Array.Empty<string>()).ToImmutableArray();
     }
 
     /// <summary>Gets the source declaration.</summary>
@@ -61,6 +67,9 @@ public sealed class ComposeService
 
     /// <summary>Gets the optional route declaration.</summary>
     public ComposeRoute? Route { get; }
+
+    /// <summary>Gets service-level non-fatal parser warnings.</summary>
+    public ImmutableArray<string> Warnings { get; }
 }
 
 /// <summary>Describes an online or local executable source.</summary>

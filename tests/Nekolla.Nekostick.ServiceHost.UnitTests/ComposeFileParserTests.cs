@@ -184,4 +184,56 @@ public sealed class ComposeFileParserTests
         Assert.Null(service.Health.Path);
         Assert.Equal(TimeSpan.FromSeconds(5), service.Health.Timeout);
     }
+
+    [Theory]
+    [InlineData("url: https://example.com/api")]
+    [InlineData("path: /tmp/api")]
+    public void Parse_strict_sources_rejects_unpinned_url_or_path(string sourceDeclaration)
+    {
+        var exception = Assert.Throws<ComposeValidationException>(() => _parser.Parse($"""
+            strictSources: true
+            services:
+              api:
+                source:
+                  {sourceDeclaration}
+            """));
+
+        Assert.Contains(exception.Errors, error =>
+            error.Path == "services.api.source.sha256" &&
+            error.Message.Contains("strictSources", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Parse_without_strict_sources_records_warning_for_unpinned_path()
+    {
+        var document = _parser.Parse("""
+            services:
+              api:
+                source:
+                  path: /tmp/api
+            """);
+
+        Assert.False(document.StrictSources);
+        var warning = Assert.Single(document.Services["api"].Warnings);
+        Assert.Contains("sha256", warning, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Parse_declared_sha256_has_no_warning_in_either_mode(bool strictSources)
+    {
+        var sha256 = new string('a', 64);
+        var document = _parser.Parse($"""
+            strictSources: {strictSources.ToString().ToLowerInvariant()}
+            services:
+              api:
+                source:
+                  url: https://example.com/api
+                  sha256: {sha256}
+            """);
+
+        Assert.Equal(strictSources, document.StrictSources);
+        Assert.Empty(document.Services["api"].Warnings);
+    }
 }

@@ -49,7 +49,8 @@ public sealed partial class ComposeFileParser
         }
 
         var rootEntries = Entries(root, "document", errors);
-        RejectUnknown(rootEntries, "document", new[] { "services" }, errors);
+        RejectUnknown(rootEntries, "document", new[] { "services", "strictSources" }, errors);
+        var strictSources = ReadOptionalBool(rootEntries, "strictSources", "document", errors) ?? false;
         if (!rootEntries.TryGetValue("services", out var servicesNode))
         {
             errors.Add(new ComposeValidationError("services", "The services mapping is required.", Line(root)));
@@ -75,7 +76,7 @@ public sealed partial class ComposeFileParser
                 continue;
             }
 
-            var service = ParseService(serviceName, servicePair.Value, errors);
+            var service = ParseService(serviceName, servicePair.Value, strictSources, errors);
             if (service is not null)
             {
                 services.Add(serviceName, service);
@@ -87,7 +88,7 @@ public sealed partial class ComposeFileParser
             throw new ComposeValidationException(errors);
         }
 
-        return new ComposeFile(services);
+        return new ComposeFile(services, strictSources);
     }
 
     /// <summary>Attempts to parse one document without throwing validation exceptions.</summary>
@@ -113,6 +114,7 @@ public sealed partial class ComposeFileParser
     private static ComposeService? ParseService(
         string serviceName,
         YamlNode node,
+        bool strictSources,
         ICollection<ComposeValidationError> errors)
     {
         var path = $"services.{serviceName}";
@@ -131,7 +133,8 @@ public sealed partial class ComposeFileParser
             return null;
         }
 
-        var source = ParseSource(sourceNode, $"{path}.source", errors);
+        var warnings = new List<string>();
+        var source = ParseSource(sourceNode, $"{path}.source", strictSources, errors, warnings);
         if (source is null)
         {
             return null;
@@ -147,7 +150,7 @@ public sealed partial class ComposeFileParser
 
         try
         {
-            return new ComposeService(source, args, environment, start, restart, health, route);
+            return new ComposeService(source, args, environment, start, restart, health, route, warnings);
         }
         catch (ArgumentException exception)
         {

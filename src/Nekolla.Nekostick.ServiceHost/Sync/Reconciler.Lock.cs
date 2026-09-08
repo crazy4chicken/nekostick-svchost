@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
 using Nekolla.Nekostick.Contracts;
 using Nekolla.Nekostick.ServiceHost.Settings;
 
@@ -103,6 +104,7 @@ public sealed partial class Reconciler
         List<ServiceSyncReport> reports,
         DateTimeOffset completedAt,
         long consumedSettingsVersion,
+        IReadOnlyCollection<string>? notes,
         CancellationToken cancellationToken)
     {
         if (!LockStateWouldChange(settings, configServiceNames, configYamls, updatedLocks))
@@ -153,7 +155,10 @@ public sealed partial class Reconciler
             return null;
         }
 
-        await ResetAffectedLockSourcesBestEffortAsync(updatedLocks.Keys, cancellationToken)
+        var expectedGenerations = updatedLocks.ToDictionary(
+            pair => pair.Key,
+            pair => (pair.Value.ServiceId, Sha256: pair.Value.Source?.Sha256 ?? string.Empty));
+        await ResetAffectedLockSourcesBestEffortAsync(expectedGenerations, cancellationToken)
             .ConfigureAwait(false);
         return new SyncReport(
             false,
@@ -167,35 +172,48 @@ public sealed partial class Reconciler
             // Resetting Source forfeits drift detection for the replaced generation, but avoids
             // claiming that an unpersisted lock still describes the replaced artifact.
             FailureCode = SyncErrorCode.LockPersistFailed,
-            ConsumedSettingsVersion = consumedSettingsVersion
+            ConsumedSettingsVersion = consumedSettingsVersion,
+            Notes = notes?.ToImmutableArray() ?? ImmutableArray<string>.Empty
         };
     }
 
     private async ValueTask ResetAffectedLockSourcesBestEffortAsync(
-        IEnumerable<(string ConfigName, string ServiceName)> affected,
+        IReadOnlyDictionary<(string ConfigName, string ServiceName), (Guid ServiceId, string Sha256)> expectedGenerations,
         CancellationToken cancellationToken)
     {
-        var affectedSet = affected.ToHashSet();
-        if (affectedSet.Count == 0)
+        if (expectedGenerations.Count == 0)
         {
             return;
         }
 
         try
         {
-            await _settingsStore.UpdateSettingsAsync(
+            var resetResult = await _settingsStore.UpdateSettingsAsync(
                     latestSettings =>
                     {
-                        foreach (var key in affectedSet)
+                        foreach (var expected in expectedGenerations)
                         {
+                            var key = expected.Key;
                             if (!latestSettings.Configs.TryGetValue(key.ConfigName, out var config) || config is null)
                             {
+                                Debug.WriteLine($"{Owner}: skipped lock source reset for {key.ConfigName}/{key.ServiceName}; configuration is gone.");
                                 continue;
                             }
 
                             var locks = config.Lock?.Services;
                             if (locks is null || !locks.TryGetValue(key.ServiceName, out var entry) || entry is null)
                             {
+                                Debug.WriteLine($"{Owner}: skipped lock source reset for {key.ConfigName}/{key.ServiceName}; lock entry is gone.");
+                                continue;
+                            }
+
+                            var identity = expected.Value;
+                            if (entry.ServiceId != identity.ServiceId ||
+                                entry.Source is null ||
+                                !string.Equals(entry.Source.Sha256 ?? string.Empty, identity.Sha256, StringComparison.OrdinalIgnoreCase))
+                            {
+                                Debug.WriteLine(
+                                    $"{Owner}: skipped lock source reset for {key.ConfigName}/{key.ServiceName}; a newer lock generation is persisted.");
                                 continue;
                             }
 
@@ -207,9 +225,14 @@ public sealed partial class Reconciler
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
+            if (!resetResult.IsSuccess)
+            {
+                Debug.WriteLine($"{Owner}: best-effort lock source reset failed.");
+            }
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            Debug.WriteLine($"{Owner}: best-effort lock source reset threw: {exception.Message}");
             // Recovery is best effort; the primary report retains the lock persistence failure.
         }
     }

@@ -16,10 +16,12 @@ public sealed partial class SvchostEntry
         {
             Reconciler? reconciler;
             SettingsStore? settingsStore;
+            IExtensionHostBridge13? bridge;
             lock (_lifecycleGate)
             {
                 reconciler = _reconciler;
                 settingsStore = _settingsStore;
+                bridge = _bridge;
             }
 
             if (reconciler is null)
@@ -32,15 +34,26 @@ public sealed partial class SvchostEntry
                     extraRouteIds,
                     cancellationToken)
                 .ConfigureAwait(false);
-            if (report.Succeeded && settingsStore is not null)
+            if (settingsStore is not null)
             {
                 await StashSettledSettingsVersionAsync(
                         settingsStore,
-                        report.ConsumedSettingsVersion)
+                        report.ConsumedSettingsVersion,
+                        report.Succeeded)
                     .ConfigureAwait(false);
             }
 
+            if (bridge is not null)
+            {
+                ObserveHostConfigurationVersion(bridge);
+            }
+
             return report;
+        }
+        catch
+        {
+            MarkReconcileUnsettled();
+            throw;
         }
         finally
         {
@@ -50,22 +63,48 @@ public sealed partial class SvchostEntry
 
     private ValueTask StashSettledSettingsVersionAsync(
         SettingsStore settingsStore,
-        long? consumedSettingsVersion)
+        long? consumedSettingsVersion,
+        bool settled)
     {
-        if (!consumedSettingsVersion.HasValue)
-        {
-            return ValueTask.CompletedTask;
-        }
-
         lock (_lifecycleGate)
         {
             if (ReferenceEquals(_settingsStore, settingsStore))
             {
-                _lastSelfSettledSettingsVersion = consumedSettingsVersion.Value;
+                if (consumedSettingsVersion.HasValue)
+                {
+                    _lastReconcilerConsumedSettingsVersion = consumedSettingsVersion.Value;
+                    if (settled)
+                    {
+                        _lastSelfSettledSettingsVersion = consumedSettingsVersion.Value;
+                    }
+                }
+
+                if (settled)
+                {
+                    _reconcileUnsettled = false;
+                    _unsettledDriftTickCount = 0;
+                }
+                else if (consumedSettingsVersion.HasValue)
+                {
+                    _reconcileUnsettled = true;
+                    _unsettledDriftTickCount = 0;
+                }
             }
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    private void MarkReconcileUnsettled()
+    {
+        lock (_lifecycleGate)
+        {
+            if (_bridge is not null)
+            {
+                _reconcileUnsettled = true;
+                _unsettledDriftTickCount = 0;
+            }
+        }
     }
 
     private void ReconcileStarted()
@@ -90,6 +129,14 @@ public sealed partial class SvchostEntry
             {
                 _reconcileIdle.TrySetResult(true);
             }
+        }
+    }
+
+    private bool IsReconcileInFlight()
+    {
+        lock (_reconcileGate)
+        {
+            return _activeReconciles > 0;
         }
     }
 

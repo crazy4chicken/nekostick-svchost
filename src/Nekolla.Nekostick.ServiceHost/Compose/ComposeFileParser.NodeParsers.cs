@@ -8,7 +8,9 @@ public sealed partial class ComposeFileParser
     private static ComposeSource? ParseSource(
         YamlNode node,
         string path,
-        ICollection<ComposeValidationError> errors)
+        bool strictSources,
+        ICollection<ComposeValidationError> errors,
+        ICollection<string> warnings)
     {
         var mapping = RequireMapping(node, path, errors);
         if (mapping is null)
@@ -45,7 +47,23 @@ public sealed partial class ComposeFileParser
             }
         }
 
-        if (sha256 is not null && !Sha256Regex.IsMatch(sha256))
+        var hasDeclaredSha256 = !string.IsNullOrWhiteSpace(sha256);
+        if (!hasDeclaredSha256)
+        {
+            const string warning = "The source does not declare sha256; source content is not pinned by the compose document.";
+            if (strictSources)
+            {
+                errors.Add(new ComposeValidationError(
+                    $"{path}.sha256",
+                    "URL and path sources must declare sha256 when strictSources is true.",
+                    entries.TryGetValue("sha256", out var shaNode) ? Line(shaNode) : Line(mapping)));
+            }
+            else
+            {
+                warnings.Add(warning);
+            }
+        }
+        else if (!Sha256Regex.IsMatch(sha256!))
         {
             errors.Add(new ComposeValidationError(
                 $"{path}.sha256",

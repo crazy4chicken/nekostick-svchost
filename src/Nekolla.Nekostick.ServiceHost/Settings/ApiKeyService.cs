@@ -3,7 +3,7 @@ using Nekolla.Nekostick.Contracts;
 
 namespace Nekolla.Nekostick.ServiceHost.Settings;
 
-/// <summary>Describes the result of startup settings probing and bootstrap selection.</summary>
+/// <summary>Describes the result of startup settings initialization and authentication selection.</summary>
 public sealed record ApiKeyInitializationResult(
     bool Succeeded,
     bool Readonly,
@@ -17,7 +17,7 @@ public sealed partial class ApiKeyService
     /// <summary>The minimum accepted permanent API key length.</summary>
     public const int MinimumKeyLength = 16;
 
-    /// <summary>The maximum number of startup probe attempts.</summary>
+    /// <summary>The maximum number of startup settings attempts.</summary>
     public const int MaxProbeAttempts = 3;
 
     private readonly SettingsStore _settingsStore;
@@ -36,7 +36,7 @@ public sealed partial class ApiKeyService
         _bridge = bridge ?? throw new ArgumentNullException(nameof(bridge));
     }
 
-    /// <summary>Gets whether startup probing found a read-only configuration store.</summary>
+    /// <summary>Gets whether startup found a read-only host configuration.</summary>
     public bool IsReadonly
     {
         get
@@ -68,6 +68,34 @@ public sealed partial class ApiKeyService
             lock (_stateGate)
             {
                 return _settings;
+            }
+        }
+    }
+
+    /// <summary>Reloads the active API key state from a freshly read settings model.</summary>
+    /// <remarks>
+    /// A missing permanent key never rotates an already-issued bootstrap key. A newly supplied
+    /// permanent key replaces the active key and exits bootstrap mode immediately.
+    /// </remarks>
+    public void ReloadFromSettings(SvchostSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        lock (_stateGate)
+        {
+            _settings = settings;
+            if (!string.IsNullOrEmpty(settings.ApiKey))
+            {
+                _permanentKey = settings.ApiKey;
+                _bootstrapKey = null;
+                _bootstrap = false;
+                return;
+            }
+
+            _permanentKey = null;
+            if (_bootstrapKey is null)
+            {
+                _bootstrap = false;
             }
         }
     }

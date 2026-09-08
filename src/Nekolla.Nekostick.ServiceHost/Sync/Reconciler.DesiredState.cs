@@ -13,6 +13,9 @@ public sealed partial class Reconciler
         List<DesiredServiceState> Desired,
         HashSet<Guid> ManagedServiceIds,
         HashSet<Guid> ManagedRouteIds,
+        HashSet<Guid> ConfiguredLockServiceIds,
+        HashSet<Guid> SourceFailureServiceIds,
+        HashSet<Guid> SourceFailureRouteIds,
         Dictionary<(string ConfigName, string ServiceName), LockServiceEntry> UpdatedLocks,
         Dictionary<string, ImmutableHashSet<string>> ConfigServiceNames,
         Dictionary<string, string> ConfigYamls,
@@ -28,6 +31,9 @@ public sealed partial class Reconciler
         var desired = new List<DesiredServiceState>();
         var managedServiceIds = new HashSet<Guid>();
         var managedRouteIds = new HashSet<Guid>();
+        var configuredLockServiceIds = new HashSet<Guid>();
+        var sourceFailureServiceIds = new HashSet<Guid>();
+        var sourceFailureRouteIds = new HashSet<Guid>();
         var updatedLocks = new Dictionary<(string ConfigName, string ServiceName), LockServiceEntry>();
         var configServiceNames = new Dictionary<string, ImmutableHashSet<string>>(StringComparer.Ordinal);
         var configYamls = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -65,6 +71,7 @@ public sealed partial class Reconciler
                 if (IsUuidV7(oldLock.ServiceId))
                 {
                     managedServiceIds.Add(oldLock.ServiceId);
+                    configuredLockServiceIds.Add(oldLock.ServiceId);
                 }
 
                 foreach (var routeId in oldLock.RouteIds ?? new List<Guid>())
@@ -114,15 +121,32 @@ public sealed partial class Reconciler
                     .ConfigureAwait(false);
                 if (!resolved.Succeeded || resolved.Source is null || resolved.ArtifactPath is null)
                 {
+                    var failedServiceId = previousLock is not null && IsUuidV7(previousLock.ServiceId)
+                        ? previousLock.ServiceId
+                        : Guid.Empty;
+                    var failedRouteIds = previousLock?.RouteIds?.ToImmutableArray() ?? ImmutableArray<Guid>.Empty;
+                    if (failedServiceId != Guid.Empty)
+                    {
+                        sourceFailureServiceIds.Add(failedServiceId);
+                        foreach (var routeId in failedRouteIds.Where(IsUuidV7))
+                        {
+                            sourceFailureRouteIds.Add(routeId);
+                        }
+                    }
+
                     reports.Add(new ServiceSyncReport(
                         configName,
                         serviceName,
                         false,
                         false,
                         previousLock?.ServiceId,
-                        previousLock?.RouteIds?.ToImmutableArray() ?? ImmutableArray<Guid>.Empty,
+                        failedRouteIds,
                         resolved.Error ?? "The source could not be resolved.",
-                        SyncErrorCode.SourceFailed));
+                        SyncErrorCode.SourceFailed)
+                    {
+                        Warnings = composeService.Warnings,
+                        NodeLocal = failedServiceId != Guid.Empty
+                    });
                     continue;
                 }
 
@@ -179,7 +203,10 @@ public sealed partial class Reconciler
                     !resolved.Reused,
                     serviceId,
                     routeIds.ToImmutableArray(),
-                    null));
+                    null)
+                {
+                    Warnings = composeService.Warnings
+                });
             }
         }
 
@@ -188,6 +215,9 @@ public sealed partial class Reconciler
             desired,
             managedServiceIds,
             managedRouteIds,
+            configuredLockServiceIds,
+            sourceFailureServiceIds,
+            sourceFailureRouteIds,
             updatedLocks,
             configServiceNames,
             configYamls,

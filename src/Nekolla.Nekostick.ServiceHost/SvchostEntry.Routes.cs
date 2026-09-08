@@ -37,6 +37,56 @@ public sealed partial class SvchostEntry
                await UpsertRouteAsync(bridge, webuiRoute, cancellationToken).ConfigureAwait(false);
     }
 
+    private static async ValueTask<bool> RemoveStaleHandlerRoutesAsync(
+        IExtensionHostBridge13 bridge,
+        SvchostRouteSettings routeSettings,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var read = await bridge.ConfigurationApi.ReadAsync(cancellationToken).ConfigureAwait(false);
+            if (!read.IsSuccess || read.Value is null)
+            {
+                return false;
+            }
+
+            var staleRouteIds = read.Value.Routes
+                .Where(route =>
+                    route.Target is ExtensionHandlerRouteTarget &&
+                    route.Id != routeSettings.Api &&
+                    route.Id != routeSettings.Webui)
+                .Select(route => route.Id)
+                .ToImmutableArray();
+            if (staleRouteIds.IsDefaultOrEmpty)
+            {
+                return true;
+            }
+
+            var changes = new ExtensionConfigurationChangeSet(
+                ImmutableArray<ExtensionRouteConfiguration>.Empty,
+                staleRouteIds,
+                ImmutableArray<ExtensionServiceConfiguration>.Empty,
+                ImmutableArray<Guid>.Empty,
+                null);
+            var write = await bridge.ConfigurationApi.ApplyAsync(
+                    read.Value.Version,
+                    changes,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (write.IsSuccess)
+            {
+                return true;
+            }
+
+            if (!write.Errors.Any(error => error.Code == ConfigurationErrorCode.ConcurrencyConflict))
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
     private static async ValueTask<bool> UpsertRouteAsync(
         IExtensionHostBridge13 bridge,
         ExtensionRouteConfiguration route,
