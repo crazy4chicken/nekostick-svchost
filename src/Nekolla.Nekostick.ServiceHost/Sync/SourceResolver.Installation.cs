@@ -24,8 +24,22 @@ public sealed partial class SourceResolver
     private static string CreateTemporaryPath(string temporaryDirectory) =>
         Path.Combine(temporaryDirectory, $"{Guid.CreateVersion7():N}.tmp");
 
-    private static void AtomicInstall(string temporaryPath, string artifactPath) =>
+    private static void AtomicInstall(string temporaryPath, string artifactPath)
+    {
+        // The host execs the artifact path directly (no shell), so the executable bit must be
+        // present. New files default to 0666 & ~umask on POSIX; set 0755 on the temporary file
+        // BEFORE the move so the artifact never exists without it.
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(
+                temporaryPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        }
+
         File.Move(temporaryPath, artifactPath, true);
+    }
 
     private static bool MatchesExpectedDigest(string? expectedDigest, string actualDigest) =>
         expectedDigest is null || string.Equals(expectedDigest, actualDigest, StringComparison.OrdinalIgnoreCase);

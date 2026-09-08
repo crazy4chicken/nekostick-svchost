@@ -230,7 +230,7 @@ DELETE after removal returns 200 `{ "deleted": true, "name", "report" }`; servic
 
 `StartAsync`:
 1. Check compatibility with `ExtensionAbi.IsCompatible(new HostApiVersion(1, 3, 3), context.Host.ApiVersion)` (the manifest also rejects older hosts).
-2. Apply the `HostInfo` readiness gate and settings initialization/readonly/bootstrap selection from §3 (25/50/75 ms backoff × 3, then `Degraded`, roughly 150 ms).
+2. Apply the `HostInfo` readiness gate and settings initialization/readonly/bootstrap selection from §3 (exponential 100ms→1s backoff × 8 attempts, ~4.5s total window, then `Degraded`).
 3. On writable hosts, remove stale svchost-owned handler routes, then register the two streaming handlers and upsert their two owned routes.
 4. Subscribe to `Host.Events` for `ExtensionSettingsChanged`; each event re-reads settings, reloads API-key state, and debounces reconciliation.
 5. Start the initial sync task; a 60-second drift loop compares HostInfo versions and retries unsettled reconciliations.

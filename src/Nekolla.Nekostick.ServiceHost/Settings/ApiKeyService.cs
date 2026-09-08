@@ -18,7 +18,12 @@ public sealed partial class ApiKeyService
     public const int MinimumKeyLength = 16;
 
     /// <summary>The maximum number of startup settings attempts.</summary>
-    public const int MaxProbeAttempts = 3;
+    /// <remarks>
+    /// Host readiness can lag extension startup by seconds; with the exponential
+    /// <see cref="DelayBeforeRetryAsync" /> schedule this yields a ~4.5s total window instead of
+    /// degrading permanently after ~150ms.
+    /// </remarks>
+    public const int MaxProbeAttempts = 8;
 
     private readonly SettingsStore _settingsStore;
     private readonly IExtensionHostBridge13 _bridge;
@@ -178,5 +183,5 @@ public sealed partial class ApiKeyService
         ConfigurationErrorCode code) => errors.Any(error => error.Code == code);
 
     private static Task DelayBeforeRetryAsync(int attempt, CancellationToken cancellationToken) =>
-        Task.Delay(TimeSpan.FromMilliseconds(25 * (attempt + 1)), cancellationToken);
+        Task.Delay(TimeSpan.FromMilliseconds(Math.Min(100 << attempt, 1000)), cancellationToken);
 }

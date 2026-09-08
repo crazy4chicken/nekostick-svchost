@@ -39,6 +39,41 @@ public sealed class SourceResolverTests
     }
 
     [Fact]
+    public async Task Resolve_local_path_installs_artifact_with_executable_bit()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var root = CreateTempDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(root, "source.bin");
+            var dataDirectory = Path.Combine(root, "data");
+            await File.WriteAllTextAsync(sourcePath, "binary");
+            var resolver = new SourceResolver();
+
+            var result = await resolver.ResolveAsync(
+                dataDirectory,
+                "demo",
+                "api",
+                new ComposeSource(null, sourcePath),
+                null);
+
+            Assert.True(result.Succeeded);
+            var mode = File.GetUnixFileMode(result.ArtifactPath!);
+            Assert.True(
+                mode.HasFlag(UnixFileMode.UserExecute),
+                $"artifact must be executable, actual mode: {mode}");
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+    [Fact]
     public async Task Resolve_local_path_with_unchanged_file_reuses_existing_artifact()
     {
         var root = CreateTempDirectory();
