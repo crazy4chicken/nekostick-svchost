@@ -62,7 +62,7 @@ nekostick-svchost/
 ```
 
 - 程序集名 `Nekolla.Nekostick.ServiceHost`, 扩展 id `nekostick.svchost` (小写, 符合 manifest id 规则).
-- `manifest.json`: `schemaVersion: 1`, `id: nekostick.svchost`, `entryAssembly: Nekolla.Nekostick.ServiceHost.dll`, `entryType: Nekolla.Nekostick.ServiceHost.SvchostEntry`, `dependencies: []`, `requiredHostApiVersion: ">=1.3.3 <2.0.0"`.
+- `manifest.json`: `schemaVersion: 1`, `id: nekostick.svchost`, `version: 1.0.0`, `entryAssembly: Nekolla.Nekostick.ServiceHost.dll`, `entryType: Nekolla.Nekostick.ServiceHost.SvchostEntry`, `dependencies: []`, `requiredHostApiVersion: ">=1.3.3 <2.0.0"` (全部为必填字段; 未知字段会被拒绝加载).
 
 ## 3. Settings 模型与 bootstrap 模式
 
