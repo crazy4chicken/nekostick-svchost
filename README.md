@@ -31,7 +31,7 @@
 ### 配置文件示例
 
 ```yaml
-strictSources: false                                           # set true to reject URL/path sources without sha256
+strictSources: false                                           # true 时拒绝未声明 sha256 的 url/path 来源
 services:
   my-api:
     source:
@@ -44,13 +44,6 @@ services:
     route: { prefix: /api/my, strip: true }
 ```
 
-## Multi-node deployment
-
-- Deploy the same svchost build on every node. The host quarantines node-local content drift when an extension's pinned content hash does not match.
-- Declare `sha256` for every URL/path source, or set `strictSources: true` at the root of each config. Without either, sync accepts the mutable source and reports a warning.
-- Missing local prerequisites put a service in `Waiting`; the host retries with backoff and auto-recovers, while svchost can nudge managed Waiting services through `ResumeAsync`.
-- Artifacts are node-local: every node resolves sources independently, and a `path` source must exist at that path on every node. A fresh node cannot restore a local path source from another node.
-
 在 WebUI 里新建配置、粘贴 YAML 即可; 也可直接调 API (`X-Api-Key` 头认证):
 
 | 端点 | 说明 |
@@ -61,6 +54,13 @@ services:
 | `POST /svchost/api/configs/{name}/sync` | 强制重新同步 |
 | `GET /svchost/api/services` | 服务运行状态 |
 | `POST /svchost/api/services/{config}/{service}/{start\|stop\|restart}` | 单服务启停 |
+
+## 多节点部署
+
+- 每个节点部署**同一份** svchost 构建产物; host 会对内容摘要漂移的扩展做节点级隔离
+- 为每个 url/path 来源声明 `sha256`, 或在配置根部设置 `strictSources: true`; 两者都没有时同步会接受可变来源但给出警告
+- 缺少本地前置 (如产物未同步到本节点) 的服务进入 `Waiting` 状态; host 退避重试并自动恢复, svchost 会通过 `ResumeAsync` 主动催醒受管服务
+- 产物是节点本地的: 每个节点独立解析来源, `path` 来源必须在每个节点的该路径存在; 新节点无法从其他节点重建本地 path 来源
 
 ## 开发
 
