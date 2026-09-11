@@ -61,8 +61,8 @@ nekostick-svchost/
 └── deploy/                         # 本地部署脚本 (复制 dll+manifest 到 host extensions/)
 ```
 
-- 程序集名 `Nekolla.Nekostick.ServiceHost`, 扩展 id `nekostick.svchost` (小写, 符合 manifest id 规则).
-- `manifest.json`: `schemaVersion: 1`, `id: nekostick.svchost`, `version: 1.0.0`, `entryAssembly: Nekolla.Nekostick.ServiceHost.dll`, `entryType: Nekolla.Nekostick.ServiceHost.SvchostEntry`, `dependencies: []`, `requiredHostApiVersion: ">=1.3.3 <2.0.0"` (全部为必填字段; 未知字段会被拒绝加载).
+- 程序集名 `Nekolla.Nekostick.ServiceHost`, 扩展 id `nekolla.nekostick.svchost` (小写, 符合 manifest id 规则).
+- `manifest.json`: `schemaVersion: 1`, `id: nekolla.nekostick.svchost`, `version: 1.0.0`, `entryAssembly: Nekolla.Nekostick.ServiceHost.dll`, `entryType: Nekolla.Nekostick.ServiceHost.SvchostEntry`, `dependencies: []`, `requiredHostApiVersion: ">=1.3.3 <2.0.0"` (全部为必填字段; 未知字段会被拒绝加载).
 
 ## 3. Settings 模型与 bootstrap 模式
 
@@ -177,7 +177,7 @@ Triggers: startup / debounced `ExtensionSettingsChanged` events (500 ms) / API w
 2. 计算期望的全局 `ServiceConfiguration` 与 `RouteConfiguration`:
    - `serviceId`/`routeIds` 从 lock 复用 (**稳定身份**, 避免每次新建导致无意义重启); 新服务用 `Guid.CreateVersion7()`.
    - `FileName` = data 目录内 artifact 绝对路径; `WorkingDirectory` = 该 config 子目录; `Environment` 来自 YAML `env`; `Enabled` 默认 true.
-   - 路由 `MetadataJson` 写入 `{"owner":"nekostick.svchost","config":"<name>","service":"<svc>"}` 作为所有权标记 (服务无 metadata 字段, 以 lock 中的 id 为准).
+   - 路由 `MetadataJson` 写入 `{"owner":"nekolla.nekostick.svchost","config":"<name>","service":"<svc>"}` 作为所有权标记 (服务无 metadata 字段, 以 lock 中的 id 为准).
 3. `FullConfiguration.ReadAsync()` 拿全量快照.
 4. 构造 `ConfigurationChangeSet` (**整体替换语义, 遗漏即删除**, 因此):
    - `GlobalSettings` / `ExtensionRecords` / `ExtensionSettings` → 快照原样透传 (含自己的 settings 快照版本, 自己的 settings 更新永远走 `WriteSettingsAsync`, 不经过这里).
@@ -191,10 +191,10 @@ Triggers: startup / debounced `ExtensionSettingsChanged` events (500 ms) / API w
 
 ## 6. 管理 API (`/svchost/api`)
 
-- 一个流式 handler `nekostick.svchost.api`, handler 内按 `request.Path` 自路由; 所有端点 JSON 进JSON 出.
+- 一个流式 handler `nekolla.nekostick.svchost.api`, handler 内按 `request.Path` 自路由; 所有端点 JSON 进JSON 出.
 - 路由注册: `StartAsync` 时用 `bridge.Routes.UpsertAsync` 幂等建两条属主路由 (id 持久化在 settings.routes):
-  - matcher `Prefix /svchost/api` → `ExtensionHandlerRouteTarget("nekostick.svchost.api")`, priority 100
-  - matcher `Prefix /svchost` → `ExtensionHandlerRouteTarget("nekostick.svchost.webui")`, priority 10
+  - matcher `Prefix /svchost/api` → `ExtensionHandlerRouteTarget("nekolla.nekostick.svchost.api")`, priority 100
+  - matcher `Prefix /svchost` → `ExtensionHandlerRouteTarget("nekolla.nekostick.svchost.webui")`, priority 10
 - 认证: 除 `GET /status` 外全部要求 `X-Api-Key` 与当前生效 key 恒定时间比较; 失败 401.
 - Read-only instances: when live `HostInfo.ReadOnly=true`, **do not register these two routes** (the WebUI has no purpose without the API); log the reason.
 
@@ -220,7 +220,7 @@ DELETE after removal returns 200 `{ "deleted": true, "name", "report" }`; servic
 
 - `webui/` 目录: **Vue 3 + Vite + TypeScript + naive-ui**, pnpm 管理, `vite-plugin-singlefile` 产出单个自包含 `dist/index.html`.
 - 嵌入: csproj 中 `<EmbeddedResource Include="..\..\webui\dist\index.html" LogicalName="Nekolla.Nekostick.ServiceHost.webui.index.html" />`; MSBuild 增量 target (Inputs=webui/src 等, Outputs=dist/index.html) 自动跑 `pnpm install --frozen-lockfile` + `pnpm build`; 环境变量 `SVCHOST_SKIP_WEBUI_BUILD=1` 可跳过 (CI/无 node 环境用预构建产物).
--  serving: 流式 handler `nekostick.svchost.webui`; `GET /svchost` 及 `/svchost` 下非 `/api` 路径 → 每次请求新开 manifest resource stream 作为 `ExtensionStreamingResponse` 的 `BodyStream` (位置在 0, host 从当前位置读), `Content-Type: text/html; charset=utf-8`, `Cache-Control: no-cache`.
+-  serving: 流式 handler `nekolla.nekostick.svchost.webui`; `GET /svchost` 及 `/svchost` 下非 `/api` 路径 → 每次请求新开 manifest resource stream 作为 `ExtensionStreamingResponse` 的 `BodyStream` (位置在 0, host 从当前位置读), `Content-Type: text/html; charset=utf-8`, `Cache-Control: no-cache`.
 - 页面行为:
   - 首屏 `GET /svchost/api/status`; `bootstrap: true` → naive-ui `n-alert` 强提醒 + 引导流程: 输入 host 日志里的一次性 key + 设置新 key (`POST /bootstrap/key`), 成功后把新 key 存 `localStorage`, 之后所有请求带 `X-Api-Key`.
   - 视图: 配置列表 / 配置编辑器 (YAML 编辑, naive-ui 表单 + 校验错误展示) / 服务仪表盘 (运行态, start/stop/restart/sync 按钮) / sync report 展示.

@@ -58,14 +58,14 @@ jobs:
         run: |
           set -euo pipefail
           out="src/Nekolla.Nekostick.ServiceHost/bin/Release/net10.0"
-          mkdir -p dist/nekostick.svchost
-          cp "$out"/*.dll "$out/manifest.json" dist/nekostick.svchost/
+          mkdir -p dist/nekostick-svchost
+          cp "$out"/*.dll "$out/manifest.json" dist/nekostick-svchost/
           sha="$(git rev-parse --short HEAD)"
-          (cd dist/nekostick.svchost && zip -r "../nekostick.svchost.$sha.zip" .)
+          (cd dist/nekostick-svchost && zip -r "../nekostick-svchost.$sha.zip" .)
 
       - name: upload extension artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          path: dist/nekostick.svchost.*.zip
+          path: dist/nekostick-svchost.*.zip
           archive: false
           if-no-files-found: error

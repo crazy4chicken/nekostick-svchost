@@ -115,7 +115,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
             bridge.Logger.Report(ExtensionLogLevel.Warning, "settings-readonly-routes-skipped");
             bridge.LogWriter.WriteText(
                 ExtensionLogLevel.Warning,
-                "nekostick.svchost settings are read-only; API and WebUI handlers/routes were not registered.");
+                "nekolla.nekostick.svchost settings are read-only; API and WebUI handlers/routes were not registered.");
             bridge.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "settings-readonly"));
             return;
         }

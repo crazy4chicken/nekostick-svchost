@@ -150,7 +150,7 @@ public sealed partial class ApiKeyService
         {
             _bridge.LogWriter.WriteText(
                 ExtensionLogLevel.Warning,
-                $"nekostick.svchost bootstrap api key: {bootstrapKey}");
+                $"nekolla.nekostick.svchost bootstrap api key: {bootstrapKey}");
         }
     }
 

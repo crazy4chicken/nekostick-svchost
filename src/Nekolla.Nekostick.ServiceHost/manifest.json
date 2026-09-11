@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "nekostick.svchost",
+  "id": "nekolla.nekostick.svchost",
   "version": "1.0.0",
   "entryAssembly": "Nekolla.Nekostick.ServiceHost.dll",
   "entryType": "Nekolla.Nekostick.ServiceHost.SvchostEntry",

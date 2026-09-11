@@ -18,8 +18,8 @@
 
 ### 安装
 
-1. 从 [Actions](https://github.com/Nekolla-Team/nekostick-svchost/actions/workflows/build.yml) 下载最新的 `nekostick.svchost.<sha>.zip` 构建产物
-2. 解压到 host 的 `extensions/nekostick.svchost/` 目录 (内含 `manifest.json` + dll)
+1. 从 [Actions](https://github.com/Nekolla-Team/nekostick-svchost/actions/workflows/build.yml) 下载最新的 `nekostick-svchost.<sha>.zip` 构建产物
+2. 解压到 host 的 `extensions/nekolla.nekostick.svchost/` 目录 (内含 `manifest.json` + dll)
 3. 重启或重载 host 以加载扩展
 
 > readonly 实例上管理 API 与 WebUI 不会开放.

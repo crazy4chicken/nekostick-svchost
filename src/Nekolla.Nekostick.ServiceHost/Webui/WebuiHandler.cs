@@ -5,7 +5,7 @@ namespace Nekolla.Nekostick.ServiceHost.Webui;
 /// <summary>Serves the embedded single-file WebUI under <c>/svchost</c>.</summary>
 public sealed class WebuiHandler : IExtensionStreamingHandler
 {
-    public const string StableHandlerId = "nekostick.svchost.webui";
+    public const string StableHandlerId = "nekolla.nekostick.svchost.webui";
     public const string ManifestResourceName = "Nekolla.Nekostick.ServiceHost.webui.index.html";
 
     private static readonly IReadOnlyDictionary<string, IEnumerable<string>> HtmlHeaders =

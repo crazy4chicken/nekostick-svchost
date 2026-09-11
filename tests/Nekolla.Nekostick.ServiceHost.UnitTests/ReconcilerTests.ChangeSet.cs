@@ -29,12 +29,12 @@ public sealed partial class ReconcilerTests
             orphanRouteId,
             unmanagedServiceId,
             "/orphan",
-            "{\"owner\":\"nekostick.svchost\",\"config\":\"missing\",\"service\":\"api\"}");
+            "{\"owner\":\"nekolla.nekostick.svchost\",\"config\":\"missing\",\"service\":\"api\"}");
         var ownerTagOnlyRoute = CreateRoute(
             ownerTagOnlyRouteId,
             unmanagedServiceId,
             "/owner-tag-only",
-            "{\"owner\":\"nekostick.svchost\"}");
+            "{\"owner\":\"nekolla.nekostick.svchost\"}");
         var snapshot = new HostConfigurationSnapshot(
             12,
             globalSettings,
@@ -43,7 +43,7 @@ public sealed partial class ReconcilerTests
             extensionRecords,
             extensionSettings);
         var desiredService = CreateService(managedServiceId, false, "/new/managed", "/new", now);
-        var desiredRoute = CreateRoute(managedRouteId, managedServiceId, "/new", "{\"owner\":\"nekostick.svchost\",\"config\":\"demo\",\"service\":\"api\"}");
+        var desiredRoute = CreateRoute(managedRouteId, managedServiceId, "/new", "{\"owner\":\"nekolla.nekostick.svchost\",\"config\":\"demo\",\"service\":\"api\"}");
         var reconciler = CreateReconciler(new FakeConfigurationApi(), new FakeFullConfigurationApi(snapshot), Path.GetTempPath());
 
         var changes = reconciler.BuildChangeSet(

@@ -11,7 +11,7 @@ public static class SvchostSettingsSchema
     public const int CurrentVersion = 1;
 
     /// <summary>The stable extension identifier used by the Host contracts.</summary>
-    public const string ExtensionId = "nekostick.svchost";
+    public const string ExtensionId = "nekolla.nekostick.svchost";
 
     /// <summary>The configuration and data-directory name validation expression.</summary>
     public const string NamePattern = "^[a-z0-9][a-z0-9-]{0,62}$";

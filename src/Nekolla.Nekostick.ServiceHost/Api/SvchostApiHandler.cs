@@ -11,7 +11,7 @@ namespace Nekolla.Nekostick.ServiceHost.Api;
 /// <summary>Serves the JSON management API under <c>/svchost/api</c>.</summary>
 public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDisposable
 {
-    public const string StableHandlerId = "nekostick.svchost.api";
+    public const string StableHandlerId = "nekolla.nekostick.svchost.api";
     public const int MaximumRequestBodyBytes = 1024 * 1024;
 
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();

@@ -44,7 +44,7 @@ public sealed partial class ReconcilerTests
                 routeId,
                 serviceId,
                 "/api",
-                "{\"owner\":\"nekostick.svchost\",\"config\":\"demo\",\"service\":\"api\"}");
+                "{\"owner\":\"nekolla.nekostick.svchost\",\"config\":\"demo\",\"service\":\"api\"}");
             var full = new FakeFullConfigurationApi(CreateSnapshot([service], [route]));
             var reconciler = CreateReconciler(
                 new FakeConfigurationApi(ToExtensionSettings(settings)),
