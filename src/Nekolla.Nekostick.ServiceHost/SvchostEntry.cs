@@ -105,6 +105,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
         if (!initialization.Succeeded)
         {
             MarkStartupDegraded();
+            bridge.Logger.Report(ExtensionLogLevel.Warning, "settings-unavailable");
             bridge.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "settings-unavailable"));
             return;
         }
