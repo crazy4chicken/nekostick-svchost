@@ -89,7 +89,7 @@ Settings 是 extension settings 里的单个 JSON 文档 (`SettingsJson`), `sche
 
 ### Bootstrap 状态机 (每次 `StartAsync` 重新判定)
 
-1. `ReadSettingsAsync` (missing settings row → host reports `NotFound`, treated as an empty document):
+1. `ReadSettingsAsync` (missing settings row → host API >=1.4 reports `NoSettings`, older hosts `NotFound`; both are treated as an empty document):
    - Retry only on `StorageUnavailable` (exponential 100ms→1s backoff × 8 attempts, ~4.5s total, then `Degraded`). **Never gate on `HostInfo` readiness**: extension `StartAsync` runs inside the host publish pipeline, so readiness stays `Unready` until after `StartAsync` returns — waiting for it deadlocks first startup (no settings, no routes, 404).
    - `HostInfo.ReadOnly=true` → retain any current settings, select read-only mode, and skip all writes/probes and API routes.
    - Writable host + `settings == null` → construct the initial schema (`apiKey: null`, empty configs), write it once, then re-read so the settings writer's conflict winner is activated.

@@ -41,6 +41,19 @@ public sealed class SettingsModelTests
     }
 
     [Fact]
+    public async Task SettingsStore_treats_legacy_not_found_as_empty_document()
+    {
+        // Hosts older than API 1.4 report NotFound for a missing settings row.
+        var store = new SettingsStore(
+            new FakeConfigurationApi { MissingSettingsErrorCode = ConfigurationErrorCode.NotFound });
+
+        var result = await store.ReadSettingsAsync();
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.Value!.Settings);
+    }
+
+    [Fact]
     public void Validate_rejects_invalid_stopped_service_names()
     {
         var settings = CreateSettings();

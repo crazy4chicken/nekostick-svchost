@@ -13,6 +13,9 @@ internal sealed class FakeConfigurationApi : IExtensionConfigurationApi
         _settingsVersion = settings?.Version ?? 0;
     }
 
+    /// <summary>Gets or sets the error code reported when no settings row exists.</summary>
+    public ConfigurationErrorCode MissingSettingsErrorCode { get; set; } = ConfigurationErrorCode.NoSettings;
+
     public int WriteSettingsCallCount { get; private set; }
 
     public List<ExtensionSettingsConfiguration> WrittenSettings { get; } = new();
@@ -34,9 +37,10 @@ internal sealed class FakeConfigurationApi : IExtensionConfigurationApi
     public ValueTask<ConfigurationReadResult<ExtensionSettingsConfiguration>> ReadSettingsAsync(
         CancellationToken cancellationToken) =>
         ValueTask.FromResult(_settings is null
-            // The real host reports NotFound when the extension has no settings row yet.
+            // The real host reports NoSettings (NotFound before API 1.4) when the extension has
+            // no settings row yet.
             ? ConfigurationReadResult<ExtensionSettingsConfiguration>.Failure(
-                new ConfigurationError(ConfigurationErrorCode.NotFound))
+                new ConfigurationError(MissingSettingsErrorCode))
             : ConfigurationReadResult<ExtensionSettingsConfiguration>.Success(_settings));
 
     public ValueTask<ConfigurationWriteResult> WriteSettingsAsync(
