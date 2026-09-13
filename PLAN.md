@@ -89,8 +89,8 @@ Settings 是 extension settings 里的单个 JSON 文档 (`SettingsJson`), `sche
 
 ### Bootstrap 状态机 (每次 `StartAsync` 重新判定)
 
-1. `HostInfo` readiness gate and `ReadSettingsAsync`:
-   - Require `HostInfo.Readiness` to be `Ready` or `Degraded` and `DatabaseAvailable` before settings access. Retry with 25/50/75 ms backoff (about 150 ms total across three attempts), then report `Degraded`.
+1. `ReadSettingsAsync` (missing settings row → host reports `NotFound`, treated as an empty document):
+   - Retry only on `StorageUnavailable` (exponential 100ms→1s backoff × 8 attempts, ~4.5s total, then `Degraded`). **Never gate on `HostInfo` readiness**: extension `StartAsync` runs inside the host publish pipeline, so readiness stays `Unready` until after `StartAsync` returns — waiting for it deadlocks first startup (no settings, no routes, 404).
    - `HostInfo.ReadOnly=true` → retain any current settings, select read-only mode, and skip all writes/probes and API routes.
    - Writable host + `settings == null` → construct the initial schema (`apiKey: null`, empty configs), write it once, then re-read so the settings writer's conflict winner is activated.
    - Writable host + existing settings → activate the current settings without an unconditional write-back.
@@ -230,7 +230,7 @@ DELETE after removal returns 200 `{ "deleted": true, "name", "report" }`; servic
 
 `StartAsync`:
 1. Check compatibility with `ExtensionAbi.IsCompatible(new HostApiVersion(1, 3, 3), context.Host.ApiVersion)` (the manifest also rejects older hosts).
-2. Apply the `HostInfo` readiness gate and settings initialization/readonly/bootstrap selection from §3 (exponential 100ms→1s backoff × 8 attempts, ~4.5s total window, then `Degraded`).
+2. Initialize settings directly (retrying only `StorageUnavailable`) and select readonly/bootstrap mode per §3; do not gate on `HostInfo` readiness (publish-pipeline deadlock, see §3).
 3. On writable hosts, remove stale svchost-owned handler routes, then register the two streaming handlers and upsert their two owned routes.
 4. Subscribe to `Host.Events` for `ExtensionSettingsChanged`; each event re-reads settings, reloads API-key state, and debounces reconciliation.
 5. Start the initial sync task; a 60-second drift loop compares HostInfo versions and retries unsettled reconciliations.

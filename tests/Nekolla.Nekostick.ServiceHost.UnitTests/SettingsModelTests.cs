@@ -26,6 +26,21 @@ public sealed class SettingsModelTests
     }
 
     [Fact]
+    public async Task SettingsStore_treats_missing_settings_row_as_empty_document()
+    {
+        // The host reports NotFound when the extension has no settings row yet (fresh node);
+        // the store must surface that as an empty document so initial settings can be created.
+        var store = new SettingsStore(new FakeConfigurationApi());
+
+        var result = await store.ReadSettingsAsync();
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        Assert.Null(result.Value.Settings);
+        Assert.Equal(0, result.Value.Version);
+    }
+
+    [Fact]
     public void Validate_rejects_invalid_stopped_service_names()
     {
         var settings = CreateSettings();

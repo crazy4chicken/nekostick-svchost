@@ -39,7 +39,12 @@ public sealed class SettingsStore
         var result = await _configurationApi.ReadSettingsAsync(cancellationToken).ConfigureAwait(false);
         if (!result.IsSuccess)
         {
-            return ConfigurationReadResult<SettingsDocumentSnapshot>.Failure(result.Errors.ToArray());
+            // A fresh node has no settings row; the host reports NotFound. Treat it as an
+            // empty document so the caller can create and persist the initial settings.
+            return result.Errors.Any(error => error.Code == ConfigurationErrorCode.NotFound)
+                ? ConfigurationReadResult<SettingsDocumentSnapshot>.Success(
+                    new SettingsDocumentSnapshot(null, null, 0, null))
+                : ConfigurationReadResult<SettingsDocumentSnapshot>.Failure(result.Errors.ToArray());
         }
 
         var configuration = result.Value;

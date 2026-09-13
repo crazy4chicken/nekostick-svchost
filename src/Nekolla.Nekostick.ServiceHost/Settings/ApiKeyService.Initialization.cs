@@ -12,26 +12,10 @@ public sealed partial class ApiKeyService
 
         for (var attempt = 0; attempt < MaxProbeAttempts; attempt++)
         {
+            // NOTE: extension StartAsync runs inside the host publish pipeline, before the
+            // host reports Ready; gating on HostInfo readiness here would deadlock first
+            // startup. Transient storage failures are covered by the retry paths below.
             var hostInfo = _bridge.HostInfo;
-            if (!ReferenceEquals(hostInfo, ExtensionHostInfoSnapshot.Unavailable) &&
-                ((hostInfo.Readiness != ExtensionHostReadinessState.Ready &&
-                  hostInfo.Readiness != ExtensionHostReadinessState.Degraded) ||
-                 !hostInfo.DatabaseAvailable))
-            {
-                if (attempt + 1 < MaxProbeAttempts)
-                {
-                    await DelayBeforeRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                ReportDegraded("settings-unavailable");
-                return new ApiKeyInitializationResult(
-                    false,
-                    false,
-                    false,
-                    null,
-                    ConfigurationErrorCode.StorageUnavailable);
-            }
 
             var read = await _settingsStore.ReadSettingsAsync(cancellationToken).ConfigureAwait(false);
             if (!read.IsSuccess)

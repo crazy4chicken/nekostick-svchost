@@ -33,7 +33,11 @@ internal sealed class FakeConfigurationApi : IExtensionConfigurationApi
 
     public ValueTask<ConfigurationReadResult<ExtensionSettingsConfiguration>> ReadSettingsAsync(
         CancellationToken cancellationToken) =>
-        ValueTask.FromResult(ConfigurationReadResult<ExtensionSettingsConfiguration>.Success(_settings!));
+        ValueTask.FromResult(_settings is null
+            // The real host reports NotFound when the extension has no settings row yet.
+            ? ConfigurationReadResult<ExtensionSettingsConfiguration>.Failure(
+                new ConfigurationError(ConfigurationErrorCode.NotFound))
+            : ConfigurationReadResult<ExtensionSettingsConfiguration>.Success(_settings));
 
     public ValueTask<ConfigurationWriteResult> WriteSettingsAsync(
         long expectedVersion,
