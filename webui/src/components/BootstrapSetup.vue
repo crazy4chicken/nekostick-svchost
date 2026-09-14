@@ -57,8 +57,8 @@ async function submit() {
 
     <n-card class="card" title="Set up your API key">
       <n-steps :current="2" size="small" class="steps">
-        <n-step title="Copy the one-time key from the host log" />
-        <n-step title="Choose a permanent key (at least 16 characters)" />
+        <n-step title="Copy one-time key" />
+        <n-step title="Choose permanent key" />
         <n-step title="Save" />
       </n-steps>
 

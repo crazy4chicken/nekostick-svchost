@@ -20,5 +20,8 @@ body,
   height: 100%;
   margin: 0;
   background-color: #101014;
+  /* naive-ui only colors its own components; raw elements must not fall back to
+     the browser default (black on dark background). */
+  color: rgba(255, 255, 255, 0.82);
 }
 </style>

@@ -52,7 +52,7 @@ function submit() {
   padding-top: 64px;
 }
 .gate-card {
-  width: 420px;
+  width: min(420px, 100%);
 }
 .hint {
   display: block;
