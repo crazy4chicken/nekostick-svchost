@@ -75,6 +75,9 @@ async function initEditor() {
       scrollBeyondLastLine: false,
       fixedOverflowWidgets: true,
       tabSize: 2,
+      // monaco 0.56 defaults quickSuggestions to offWhenInlineCompletions; force it on.
+      quickSuggestions: { other: true, comments: false, strings: true },
+      suggest: { showWords: false },
     })
     monacoEditor = editor
     const model = editor.getModel()

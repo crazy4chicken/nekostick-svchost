@@ -21,6 +21,11 @@ export interface MonacoTextModel {
   getPositionAt(offset: number): { lineNumber: number; column: number }
   getLineContent(lineNumber: number): string
   getLineCount(): number
+  getWordUntilPosition(position: { lineNumber: number; column: number }): {
+    startColumn: number
+    endColumn: number
+    word: string
+  }
 }
 
 export interface MonacoEditor {
@@ -47,6 +52,7 @@ export interface MonacoCompletionItem {
   insertText: string
   detail?: string
   documentation?: string
+  sortText?: string
   range?: unknown
 }
 

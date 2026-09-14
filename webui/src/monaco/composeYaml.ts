@@ -386,22 +386,72 @@ function keyPathAbove(model: MonacoTextModel, lineNumber: number, indent: number
   return stack.map((entry) => entry.key)
 }
 
-const KEY_COMPLETIONS: Record<string, string[]> = {
-  '': ROOT_KEYS,
-  services: [],
-  'services.*': SERVICE_KEYS,
-  'services.*.source': SOURCE_KEYS,
-  'services.*.health': HEALTH_KEYS,
-  'services.*.route': ROUTE_KEYS,
+interface KeyDef {
+  doc: string
+  block?: boolean
 }
 
-const VALUE_COMPLETIONS: Record<string, string[]> = {
-  strictSources: ['true', 'false'],
-  start: START_MODES,
-  restart: RESTART_POLICIES,
-  type: HEALTH_TYPES,
-  strip: ['true', 'false'],
-  timeout: ['500ms', '5s', '30s', '1m'],
+const KEY_DEFS: Record<string, Record<string, KeyDef>> = {
+  '': {
+    services: { doc: 'Service definitions keyed by name (^[a-z0-9][a-z0-9-]{0,62}$).', block: true },
+    strictSources: { doc: 'When true, url/path sources must declare a sha256 digest.' },
+  },
+  'services.*': {
+    source: { doc: 'Executable source: exactly one of url or path, optional sha256 pinning.', block: true },
+    args: { doc: 'Process arguments as a YAML sequence.' },
+    env: { doc: 'Environment variable overrides (KEY: value).', block: true },
+    start: { doc: 'When to start: eager (with the config) or lazy (first request).' },
+    restart: { doc: 'Restart policy: never, on-failure, or always.' },
+    health: { doc: 'Health check: process liveness, loopback TCP, or HTTP.', block: true },
+    route: { doc: 'Optional HTTP route declaration.', block: true },
+  },
+  'services.*.source': {
+    url: { doc: 'HTTPS URL to download the executable from.' },
+    path: { doc: 'Node-local filesystem path of the executable.' },
+    sha256: { doc: 'Expected SHA-256 of the source content (64 hex characters).' },
+  },
+  'services.*.health': {
+    type: { doc: 'Check mechanism: process, tcp, or http.' },
+    path: { doc: 'HTTP health-check path, e.g. /healthz.' },
+    timeout: { doc: 'Check timeout: 500ms, 5s, 2m, 1h.' },
+  },
+  'services.*.route': {
+    prefix: { doc: 'Path prefix to match, e.g. /api/demo.' },
+    strip: { doc: 'Strip the prefix before forwarding.' },
+    methods: { doc: 'Restrict to these HTTP methods.' },
+    hosts: { doc: 'Restrict to these Host header values.' },
+  },
+}
+
+const VALUE_DEFS: Record<string, { value: string; doc: string }[]> = {
+  strictSources: [
+    { value: 'true', doc: 'Sources without sha256 are rejected.' },
+    { value: 'false', doc: 'Sources without sha256 only produce a warning.' },
+  ],
+  start: [
+    { value: 'eager', doc: 'Start as soon as the configuration is applied.' },
+    { value: 'lazy', doc: 'Start on the first incoming request.' },
+  ],
+  restart: [
+    { value: 'never', doc: 'Never restart after exit.' },
+    { value: 'on-failure', doc: 'Restart only after a failed exit.' },
+    { value: 'always', doc: 'Restart after every exit.' },
+  ],
+  type: [
+    { value: 'process', doc: 'Check that the child process is alive.' },
+    { value: 'tcp', doc: 'Probe a loopback TCP endpoint.' },
+    { value: 'http', doc: 'GET a loopback HTTP path (requires path).' },
+  ],
+  strip: [
+    { value: 'true', doc: 'Remove the route prefix before forwarding.' },
+    { value: 'false', doc: 'Forward the original request path.' },
+  ],
+  timeout: [
+    { value: '500ms', doc: 'Sub-second probe timeout.' },
+    { value: '5s', doc: 'The parser default.' },
+    { value: '30s', doc: 'Slow service startup tolerance.' },
+    { value: '1m', doc: 'Very slow dependency tolerance.' },
+  ],
 }
 
 function provideCompletions(
@@ -410,25 +460,33 @@ function provideCompletions(
   position: { lineNumber: number; column: number },
 ): { suggestions: MonacoCompletionItem[] } {
   const line = model.getLineContent(position.lineNumber)
+  // Letter trigger characters bypass quickSuggestions gating, so suppress
+  // comments explicitly here.
+  if (line.trimStart().startsWith('#')) {
+    return { suggestions: [] }
+  }
   const beforeCursor = line.slice(0, position.column - 1)
   const indent = /^\s*/.exec(line)?.[0].length ?? 0
+  const word = model.getWordUntilPosition(position)
+  const wordRange = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
 
   // Value completion: "key: <cursor>"
   const valueMatch = /^\s*([A-Za-z][^:#]*):\s*([^:#]*)$/.exec(beforeCursor)
   if (valueMatch) {
-    const key = valueMatch[1].trim()
-    const values = VALUE_COMPLETIONS[key]
+    const values = VALUE_DEFS[valueMatch[1].trim()]
     if (!values) {
       return { suggestions: [] }
     }
     const valueStart = beforeCursor.length - valueMatch[2].length + 1
     const range = new monaco.Range(position.lineNumber, valueStart, position.lineNumber, position.column)
     return {
-      suggestions: values.map((value) => ({
-        label: value,
+      suggestions: values.map((entry, index) => ({
+        label: entry.value,
         kind: monaco.languages.CompletionItemKind.Value,
-        insertText: value,
-        detail: `${key} value`,
+        insertText: entry.value,
+        detail: 'allowed value',
+        documentation: entry.doc,
+        sortText: String(index).padStart(2, '0'),
         range,
       })),
     }
@@ -437,16 +495,18 @@ function provideCompletions(
   // Key completion based on the mapping path above the cursor.
   const path = keyPathAbove(model, position.lineNumber, indent)
   const generalized = path.map((segment, index) => (index >= 1 && path[0] === 'services' && index === 1 ? '*' : segment))
-  const lookup = generalized.join('.').replace(/^services\.[^.]+/, 'services.*')
-  const keys = KEY_COMPLETIONS[lookup] ?? KEY_COMPLETIONS[generalized.join('.')] ?? []
-  const range = new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column)
+  const defs = KEY_DEFS[generalized.join('.')] ?? {}
   return {
-    suggestions: keys.map((key) => ({
+    suggestions: Object.entries(defs).map(([key, def], index) => ({
       label: key,
       kind: monaco.languages.CompletionItemKind.Field,
-      insertText: `${key}: `,
+      // The editor's auto-indent already repeats the current indent after \n;
+      // add only the two-space child level for block keys.
+      insertText: def.block ? `${key}:\n  ` : `${key}: `,
       detail: 'compose key',
-      range,
+      documentation: def.doc,
+      sortText: String(index).padStart(2, '0'),
+      range: wordRange,
     })),
   }
 }
@@ -463,8 +523,12 @@ export async function attachComposeSupport(
 
   if (!supportRegistered) {
     supportRegistered = true
+    // Letter triggers: monaco 0.56 quickSuggestions does not consult providers
+    // while typing (verified empirically); declared trigger characters do.
+    // Returning empty suggestions for non-key positions keeps this silent.
+    const letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
     monaco.languages.registerCompletionItemProvider('yaml', {
-      triggerCharacters: [':', ' '],
+      triggerCharacters: [':', ' ', ...letters],
       provideCompletionItems: (m, position) => provideCompletions(monaco, m, position),
     })
   }
