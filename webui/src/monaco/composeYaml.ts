@@ -6,10 +6,11 @@
 import type {
   MonacoApi,
   MonacoCompletionItem,
+  MonacoEditor,
   MonacoMarker,
+  MonacoPosition,
   MonacoTextModel,
 } from './loader'
-
 const YAML_LIB_URL = 'https://cdn.jsdelivr.net/npm/yaml@2.9.1/+esm'
 const MARKER_OWNER = 'svchost-compose'
 
@@ -493,9 +494,7 @@ function provideCompletions(
   }
 
   // Key completion based on the mapping path above the cursor.
-  const path = keyPathAbove(model, position.lineNumber, indent)
-  const generalized = path.map((segment, index) => (index >= 1 && path[0] === 'services' && index === 1 ? '*' : segment))
-  const defs = KEY_DEFS[generalized.join('.')] ?? {}
+  const defs = KEY_DEFS[docPath(keyPathAbove(model, position.lineNumber, indent))] ?? {}
   return {
     suggestions: Object.entries(defs).map(([key, def], index) => ({
       label: key,
@@ -511,14 +510,58 @@ function provideCompletions(
   }
 }
 
-let supportRegistered = false
+/** Maps a concrete key path (services.demo-api.source) to its schema path (services.*.source). */
+function docPath(path: string[]): string {
+  return path.map((segment, index) => (path[0] === 'services' && index === 1 ? '*' : segment)).join('.')
+}
 
-/** Registers compose completion once and attaches debounced validation to the model. */
-export async function attachComposeSupport(
+function provideHover(
   monaco: MonacoApi,
   model: MonacoTextModel,
-  onDidChangeModelContent: (listener: () => void) => { dispose(): void },
-): Promise<void> {
+  position: MonacoPosition,
+): { contents: { value: string }[]; range?: unknown } | null {
+  const line = model.getLineContent(position.lineNumber)
+  const pairMatch = /^(\s*)([A-Za-z][^:#]*):\s*([^:#]*)$/.exec(line)
+  if (!pairMatch) {
+    return null
+  }
+  const indent = pairMatch[1].length
+  const key = pairMatch[2].trim()
+  const keyEnd = indent + 1 + key.length
+
+  if (position.column <= keyEnd) {
+    // Hovering the key: show the field documentation.
+    const path = keyPathAbove(model, position.lineNumber, indent)
+    const doc = KEY_DEFS[docPath(path)]?.[key]?.doc
+    if (!doc) {
+      return null
+    }
+    return {
+      contents: [{ value: `**\`${key}\`** — ${doc}` }],
+      range: new monaco.Range(position.lineNumber, indent + 1, position.lineNumber, keyEnd),
+    }
+  }
+
+  // Hovering a value: show the hovered enum member's documentation.
+  const word = model.getWordAtPosition(position)
+  const entry = word ? VALUE_DEFS[key]?.find((candidate) => candidate.value === word.word) : undefined
+  if (!entry || !word) {
+    return null
+  }
+  return {
+    contents: [{ value: `**\`${entry.value}\`** — ${entry.doc}` }],
+    range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+  }
+}
+
+let supportRegistered = false
+
+/** Registers compose completion/hover once and attaches debounced validation plus newline auto-suggest. */
+export async function attachComposeSupport(monaco: MonacoApi, editor: MonacoEditor): Promise<void> {
+  const model = editor.getModel()
+  if (!model) {
+    return
+  }
   const yaml = await loadYamlLib()
 
   if (!supportRegistered) {
@@ -531,17 +574,31 @@ export async function attachComposeSupport(
       triggerCharacters: [':', ' ', ...letters],
       provideCompletionItems: (m, position) => provideCompletions(monaco, m, position),
     })
+    monaco.languages.registerHoverProvider('yaml', {
+      provideHover: (m, position) => provideHover(monaco, m, position),
+    })
   }
 
   let timer: number | null = null
   const runValidation = () => {
     monaco.editor.setModelMarkers(model, MARKER_OWNER, validateDocument(monaco, model, yaml, model.getValue()))
   }
-  onDidChangeModelContent(() => {
+  editor.onDidChangeModelContent((event) => {
     if (timer !== null) {
       clearTimeout(timer)
     }
     timer = window.setTimeout(runValidation, 300)
+
+    // After Enter lands on a fresh (whitespace-only) line, offer the keys
+    // valid at that indentation immediately.
+    if (event.changes.some((change) => change.text.includes('\n'))) {
+      window.setTimeout(() => {
+        const cursor = editor.getPosition()
+        if (cursor && model.getLineContent(cursor.lineNumber).trim() === '') {
+          editor.trigger('svchost.newline', 'editor.action.triggerSuggest')
+        }
+      }, 50)
+    }
   })
   runValidation()
 }

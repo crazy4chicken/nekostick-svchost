@@ -15,24 +15,37 @@ declare global {
   }
 }
 
+export interface MonacoPosition {
+  lineNumber: number
+  column: number
+}
+
+export interface MonacoWord {
+  startColumn: number
+  endColumn: number
+  word: string
+}
+
 export interface MonacoTextModel {
   getValue(): string
-  getOffsetAt(position: { lineNumber: number; column: number }): number
-  getPositionAt(offset: number): { lineNumber: number; column: number }
+  getOffsetAt(position: MonacoPosition): number
+  getPositionAt(offset: number): MonacoPosition
   getLineContent(lineNumber: number): string
   getLineCount(): number
-  getWordUntilPosition(position: { lineNumber: number; column: number }): {
-    startColumn: number
-    endColumn: number
-    word: string
-  }
+  getWordUntilPosition(position: MonacoPosition): MonacoWord
+  getWordAtPosition(position: MonacoPosition): MonacoWord | null
+}
+
+export interface MonacoContentChange {
+  changes: { text: string }[]
 }
 
 export interface MonacoEditor {
   getValue(): string
   setValue(value: string): void
   getModel(): MonacoTextModel | null
-  onDidChangeModelContent(listener: () => void): { dispose(): void }
+  getPosition(): MonacoPosition | null
+  onDidChangeModelContent(listener: (event: MonacoContentChange) => void): { dispose(): void }
   trigger(source: string, handlerId: string): void
   dispose(): void
 }
@@ -72,8 +85,17 @@ export interface MonacoApi {
         triggerCharacters?: string[]
         provideCompletionItems(
           model: MonacoTextModel,
-          position: { lineNumber: number; column: number },
+          position: MonacoPosition,
         ): { suggestions: MonacoCompletionItem[] }
+      },
+    ): { dispose(): void }
+    registerHoverProvider(
+      languageId: string,
+      provider: {
+        provideHover(
+          model: MonacoTextModel,
+          position: MonacoPosition,
+        ): { contents: { value: string }[]; range?: unknown } | null
       },
     ): { dispose(): void }
     CompletionItemKind: { Field: number; Value: number }

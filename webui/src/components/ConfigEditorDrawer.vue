@@ -80,15 +80,10 @@ async function initEditor() {
       suggest: { showWords: false },
     })
     monacoEditor = editor
-    const model = editor.getModel()
-    if (model) {
-      await attachComposeSupport(monaco, model, (listener) =>
-        editor.onDidChangeModelContent(() => {
-          editorYaml.value = editor.getValue()
-          listener()
-        }),
-      )
-    }
+    editor.onDidChangeModelContent(() => {
+      editorYaml.value = editor.getValue()
+    })
+    await attachComposeSupport(monaco, editor)
   } catch (err) {
     console.error('svchost: monaco editor init failed', err)
     editorFailed.value = true
