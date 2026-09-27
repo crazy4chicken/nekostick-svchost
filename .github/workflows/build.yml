@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          out="src/Nekolla.Nekostick.ServiceHost/bin/Release/net10.0"
+          out="src/Nekostick.ServiceHost/bin/Release/net10.0"
           mkdir -p dist/nekostick-svchost
           cp "$out"/*.dll "$out/manifest.json" dist/nekostick-svchost/
           sha="$(git rev-parse --short HEAD)"

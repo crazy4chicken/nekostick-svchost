@@ -46,8 +46,8 @@ nekostick-svchost/
 ├── Directory.Build.props           # Nullable=enable, ImplicitUsings, LangVersion, 警告级别
 ├── Directory.Packages.props        # CPM: Nekolla.Nekostick.Contracts 1.3.3, YamlDotNet, xunit, etc.
 ├── src/
-│   └── Nekolla.Nekostick.ServiceHost/
-│       ├── Nekolla.Nekostick.ServiceHost.csproj
+│   └── Nekostick.ServiceHost/
+│       ├── Nekostick.ServiceHost.csproj
 │       ├── manifest.json           # 构建时复制到输出目录
 │       ├── SvchostEntry.cs         # IExtensionEntry 入口
 │       ├── Settings/               # settings JSON 模型与读写
@@ -56,13 +56,13 @@ nekostick-svchost/
 │       ├── Api/                    # 管理 API 流式 handler + 路由 + 认证
 │       └── Webui/                  # WebUI 流式 handler (嵌资源)
 ├── tests/
-│   └── Nekolla.Nekostick.ServiceHost.UnitTests/
+│   └── Nekostick.ServiceHost.UnitTests/
 ├── webui/                          # Vue 3 + Vite + naive-ui
 └── deploy/                         # 本地部署脚本 (复制 dll+manifest 到 host extensions/)
 ```
 
-- 程序集名 `Nekolla.Nekostick.ServiceHost`, 扩展 id `nekolla.nekostick.svchost` (小写, 符合 manifest id 规则).
-- `manifest.json`: `schemaVersion: 1`, `id: nekolla.nekostick.svchost`, `version: 1.0.0`, `entryAssembly: Nekolla.Nekostick.ServiceHost.dll`, `entryType: Nekolla.Nekostick.ServiceHost.SvchostEntry`, `dependencies: []`, `requiredHostApiVersion: ">=1.3.3 <2.0.0"` (全部为必填字段; 未知字段会被拒绝加载).
+- 程序集名 `Nekostick.ServiceHost`, 扩展 id `nekostick.svchost` (小写, 符合 manifest id 规则).
+- `manifest.json`: `schemaVersion: 1`, `id: nekostick.svchost`, `version: 1.0.0`, `entryAssembly: Nekostick.ServiceHost.dll`, `entryType: Nekostick.ServiceHost.SvchostEntry`, `dependencies: []`, `requiredHostApiVersion: ">=1.3.3 <2.0.0"` (全部为必填字段; 未知字段会被拒绝加载).
 
 ## 3. Settings 模型与 bootstrap 模式
 
@@ -177,7 +177,7 @@ Triggers: startup / debounced `ExtensionSettingsChanged` events (500 ms) / API w
 2. 计算期望的全局 `ServiceConfiguration` 与 `RouteConfiguration`:
    - `serviceId`/`routeIds` 从 lock 复用 (**稳定身份**, 避免每次新建导致无意义重启); 新服务用 `Guid.CreateVersion7()`.
    - `FileName` = data 目录内 artifact 绝对路径; `WorkingDirectory` = 该 config 子目录; `Environment` 来自 YAML `env`; `Enabled` 默认 true.
-   - 路由 `MetadataJson` 写入 `{"owner":"nekolla.nekostick.svchost","config":"<name>","service":"<svc>"}` 作为所有权标记 (服务无 metadata 字段, 以 lock 中的 id 为准).
+   - 路由 `MetadataJson` 写入 `{"owner":"nekostick.svchost","config":"<name>","service":"<svc>"}` 作为所有权标记 (服务无 metadata 字段, 以 lock 中的 id 为准).
 3. `FullConfiguration.ReadAsync()` 拿全量快照.
 4. 构造 `ConfigurationChangeSet` (**整体替换语义, 遗漏即删除**, 因此):
    - `GlobalSettings` / `ExtensionRecords` / `ExtensionSettings` → 快照原样透传 (含自己的 settings 快照版本, 自己的 settings 更新永远走 `WriteSettingsAsync`, 不经过这里).
@@ -191,10 +191,10 @@ Triggers: startup / debounced `ExtensionSettingsChanged` events (500 ms) / API w
 
 ## 6. 管理 API (`/svchost/api`)
 
-- 一个流式 handler `nekolla.nekostick.svchost.api`, handler 内按 `request.Path` 自路由; 所有端点 JSON 进JSON 出.
+- 一个流式 handler `nekostick.svchost.api`, handler 内按 `request.Path` 自路由; 所有端点 JSON 进JSON 出.
 - 路由注册: `StartAsync` 时用 `bridge.Routes.UpsertAsync` 幂等建两条属主路由 (id 持久化在 settings.routes):
-  - matcher `Prefix /svchost/api` → `ExtensionHandlerRouteTarget("nekolla.nekostick.svchost.api")`, priority 100
-  - matcher `Prefix /svchost` → `ExtensionHandlerRouteTarget("nekolla.nekostick.svchost.webui")`, priority 10
+  - matcher `Prefix /svchost/api` → `ExtensionHandlerRouteTarget("nekostick.svchost.api")`, priority 100
+  - matcher `Prefix /svchost` → `ExtensionHandlerRouteTarget("nekostick.svchost.webui")`, priority 10
 - 认证: 除 `GET /status` 外全部要求 `X-Api-Key` 与当前生效 key 恒定时间比较; 失败 401.
 - Read-only instances: when live `HostInfo.ReadOnly=true`, **do not register these two routes** (the WebUI has no purpose without the API); log the reason.
 
@@ -219,8 +219,8 @@ DELETE after removal returns 200 `{ "deleted": true, "name", "report" }`; servic
 ## 7. WebUI (`/svchost`)
 
 - `webui/` 目录: **Vue 3 + Vite + TypeScript + naive-ui**, pnpm 管理, `vite-plugin-singlefile` 产出单个自包含 `dist/index.html`.
-- 嵌入: csproj 中 `<EmbeddedResource Include="..\..\webui\dist\index.html" LogicalName="Nekolla.Nekostick.ServiceHost.webui.index.html" />`; MSBuild 增量 target (Inputs=webui/src 等, Outputs=dist/index.html) 自动跑 `pnpm install --frozen-lockfile` + `pnpm build`; 环境变量 `SVCHOST_SKIP_WEBUI_BUILD=1` 可跳过 (CI/无 node 环境用预构建产物).
--  serving: 流式 handler `nekolla.nekostick.svchost.webui`; `GET /svchost` 及 `/svchost` 下非 `/api` 路径 → 每次请求新开 manifest resource stream 作为 `ExtensionStreamingResponse` 的 `BodyStream` (位置在 0, host 从当前位置读), `Content-Type: text/html; charset=utf-8`, `Cache-Control: no-cache`.
+- 嵌入: csproj 中 `<EmbeddedResource Include="..\..\webui\dist\index.html" LogicalName="Nekostick.ServiceHost.webui.index.html" />`; MSBuild 增量 target (Inputs=webui/src 等, Outputs=dist/index.html) 自动跑 `pnpm install --frozen-lockfile` + `pnpm build`; 环境变量 `SVCHOST_SKIP_WEBUI_BUILD=1` 可跳过 (CI/无 node 环境用预构建产物).
+-  serving: 流式 handler `nekostick.svchost.webui`; `GET /svchost` 及 `/svchost` 下非 `/api` 路径 → 每次请求新开 manifest resource stream 作为 `ExtensionStreamingResponse` 的 `BodyStream` (位置在 0, host 从当前位置读), `Content-Type: text/html; charset=utf-8`, `Cache-Control: no-cache`.
 - 页面行为:
   - 首屏 `GET /svchost/api/status`; `bootstrap: true` → naive-ui `n-alert` 强提醒 + 引导流程: 输入 host 日志里的一次性 key + 设置新 key (`POST /bootstrap/key`), 成功后把新 key 存 `localStorage`, 之后所有请求带 `X-Api-Key`.
   - 视图: 配置列表 / 配置编辑器 (YAML 编辑, naive-ui 表单 + 校验错误展示) / 服务仪表盘 (运行态, start/stop/restart/sync 按钮) / sync report 展示.
@@ -238,7 +238,7 @@ DELETE after removal returns 200 `{ "deleted": true, "name", "report" }`; servic
 
 `StopAsync`: 注销 handler (`TryUnregisterHandler`), 取消后台任务, 等待进行中的 reconcile 退出 (带超时). 管理的全局服务/路由**不**随扩展停止而删除 (它们是 host 全局资产, 配置仍在; 如需清理由用户走 API).
 
-## 9. 测试计划 (`tests/Nekolla.Nekostick.ServiceHost.UnitTests`, xunit)
+## 9. 测试计划 (`tests/Nekostick.ServiceHost.UnitTests`, xunit)
 
 - YAML 解析/校验: 合法模型, 未知字段拒绝, 双来源冲突, http url 拒绝, health/route 条件校验.
 - lock 语义: url 不变零网络路径 (mock HttpClient), artifact 损坏重下 + hash 不匹配报错, 本地来源漂移重锁.

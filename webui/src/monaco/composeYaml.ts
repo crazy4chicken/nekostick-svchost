@@ -14,7 +14,7 @@ import type {
 const YAML_LIB_URL = 'https://cdn.jsdelivr.net/npm/yaml@2.9.1/+esm'
 const MARKER_OWNER = 'svchost-compose'
 
-// Rule mirrors: src/Nekolla.Nekostick.ServiceHost/Compose/ComposeFileParser.Validation.cs
+// Rule mirrors: src/Nekostick.ServiceHost/Compose/ComposeFileParser.Validation.cs
 const SERVICE_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/
 const SHA256 = /^[0-9a-fA-F]{64}$/
 const DURATION = /^[0-9]+(\.[0-9]+)?(ms|s|m|h)$/i

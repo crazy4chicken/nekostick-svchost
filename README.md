@@ -19,8 +19,9 @@
 ### 安装
 
 1. 从 [Actions](https://github.com/Nekolla-Team/nekostick-svchost/actions/workflows/build.yml) 下载最新的 `nekostick-svchost.<sha>.zip` 构建产物
-2. 解压到 host 的 `extensions/nekolla.nekostick.svchost/` 目录 (内含 `manifest.json` + dll)
+2. 解压到 host 的 `extensions/nekostick.svchost/` 目录 (内含 `manifest.json` + dll)
 3. 重启或重载 host 以加载扩展
+首次启动重命名后的扩展时，会自动将设置从旧扩展 ID `nekolla.nekostick.svchost` 迁移到新 ID。
 
 > readonly 实例上管理 API 与 WebUI 不会开放.
 
@@ -74,7 +75,7 @@ SVCHOST_SKIP_WEBUI_BUILD=1 dotnet build nekostick-svchost.slnx   # 跳过 webui 
 
 仓库结构:
 
-- `src/Nekolla.Nekostick.ServiceHost/` — 扩展本体 (Settings / Compose / Sync / Api / Webui)
+- `src/Nekostick.ServiceHost/` — 扩展本体 (Settings / Compose / Sync / Api / Webui)
 - `webui/` — Vue 3 + Vite + naive-ui 管理界面, 构建为单文件后以嵌入资源打进 dll
 - `tests/` — xunit 单元测试
 - `.github/workflows/build.yml` — test → build → pack → artifact (hash 固定 action 版本)

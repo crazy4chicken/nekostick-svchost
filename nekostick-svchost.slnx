@@ -1,8 +1,8 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/Nekolla.Nekostick.ServiceHost/Nekolla.Nekostick.ServiceHost.csproj" />
+    <Project Path="src/Nekostick.ServiceHost/Nekostick.ServiceHost.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/Nekolla.Nekostick.ServiceHost.UnitTests/Nekolla.Nekostick.ServiceHost.UnitTests.csproj" />
+    <Project Path="tests/Nekostick.ServiceHost.UnitTests/Nekostick.ServiceHost.UnitTests.csproj" />
   </Folder>
 </Solution>
