@@ -106,6 +106,12 @@ public sealed partial class Reconciler
             configServiceNames[configName] = compose.Services.Keys.ToImmutableHashSet(StringComparer.Ordinal);
             configYamls[configName] = config.Yaml ?? string.Empty;
 
+            var serviceStates = new List<(
+                string ServiceName,
+                ComposeService ComposeService,
+                LockServiceEntry? PreviousLock,
+                SourceResolutionResult Resolution,
+                Guid? ServiceId)>();
             foreach (var servicePair in compose.Services.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             {
                 var serviceName = servicePair.Key;
@@ -119,11 +125,29 @@ public sealed partial class Reconciler
                         previousLock?.Source,
                         cancellationToken)
                     .ConfigureAwait(false);
+                var serviceId = previousLock is not null && IsUuidV7(previousLock.ServiceId)
+                    ? previousLock.ServiceId
+                    : resolved.Succeeded && resolved.Source is not null && resolved.ArtifactPath is not null
+                        ? Guid.CreateVersion7()
+                        : (Guid?)null;
+                serviceStates.Add((serviceName, composeService, previousLock, resolved, serviceId));
+            }
+
+            var serviceIds = serviceStates
+                .Where(state => state.ServiceId is not null)
+                .ToDictionary(state => state.ServiceName, state => state.ServiceId!.Value, StringComparer.Ordinal);
+            Func<string, Guid?> resolveTemplateTarget = target =>
+                serviceIds.TryGetValue(target, out var serviceId) ? serviceId : null;
+
+            foreach (var state in serviceStates)
+            {
+                var serviceName = state.ServiceName;
+                var composeService = state.ComposeService;
+                var previousLock = state.PreviousLock;
+                var resolved = state.Resolution;
                 if (!resolved.Succeeded || resolved.Source is null || resolved.ArtifactPath is null)
                 {
-                    var failedServiceId = previousLock is not null && IsUuidV7(previousLock.ServiceId)
-                        ? previousLock.ServiceId
-                        : Guid.Empty;
+                    var failedServiceId = state.ServiceId ?? Guid.Empty;
                     var failedRouteIds = previousLock?.RouteIds?.ToImmutableArray() ?? ImmutableArray<Guid>.Empty;
                     if (failedServiceId != Guid.Empty)
                     {
@@ -150,9 +174,49 @@ public sealed partial class Reconciler
                     continue;
                 }
 
-                var serviceId = previousLock is not null && IsUuidV7(previousLock.ServiceId)
-                    ? previousLock.ServiceId
-                    : Guid.CreateVersion7();
+                var serviceId = state.ServiceId!.Value;
+                ImmutableArray<string> args;
+                ImmutableDictionary<string, string> environment;
+                try
+                {
+                    args = composeService.Args
+                        .Select(value => ComposeTemplate.Rewrite(value, resolveTemplateTarget))
+                        .ToImmutableArray();
+                    environment = composeService.Environment.ToImmutableDictionary(
+                        pair => pair.Key,
+                        pair => ComposeTemplate.Rewrite(pair.Value, resolveTemplateTarget),
+                        StringComparer.Ordinal);
+                }
+                catch (ComposeTemplateResolutionException exception)
+                {
+                    var failedServiceId = previousLock is not null && IsUuidV7(previousLock.ServiceId)
+                        ? previousLock.ServiceId
+                        : Guid.Empty;
+                    var failedRouteIds = previousLock?.RouteIds?.ToImmutableArray() ?? ImmutableArray<Guid>.Empty;
+                    if (failedServiceId != Guid.Empty)
+                    {
+                        sourceFailureServiceIds.Add(failedServiceId);
+                        foreach (var routeId in failedRouteIds.Where(IsUuidV7))
+                        {
+                            sourceFailureRouteIds.Add(routeId);
+                        }
+                    }
+
+                    reports.Add(new ServiceSyncReport(
+                        configName,
+                        serviceName,
+                        false,
+                        false,
+                        previousLock?.ServiceId,
+                        failedRouteIds,
+                        $"The template target service '{exception.Target}' could not be resolved.",
+                        SyncErrorCode.ReconcileFailed)
+                    {
+                        Warnings = composeService.Warnings
+                    });
+                    continue;
+                }
+
                 var routeIds = ResolveRouteIds(composeService.Route, previousLock);
                 var workingDirectory = Path.GetFullPath(Path.Combine(_dataDirectory, "svchost", configName));
                 var now = DateTimeOffset.UtcNow;
@@ -161,9 +225,9 @@ public sealed partial class Reconciler
                     serviceId,
                     !isStopped,
                     resolved.ArtifactPath,
-                    composeService.Args,
+                    args,
                     workingDirectory,
-                    composeService.Environment,
+                    environment,
                     ToContract(composeService.Start),
                     ToContract(composeService.Restart),
                     new ServiceHealthCheckConfiguration(

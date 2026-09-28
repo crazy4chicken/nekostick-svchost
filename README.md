@@ -21,6 +21,7 @@
 1. 从 [Actions](https://github.com/Nekolla-Team/nekostick-svchost/actions/workflows/build.yml) 下载最新的 `nekostick-svchost.<sha>.zip` 构建产物
 2. 解压到 host 的 `extensions/nekostick.svchost/` 目录 (内含 `manifest.json` + dll)
 3. 重启或重载 host 以加载扩展
+
 首次启动重命名后的扩展时，会自动将设置从旧扩展 ID `nekolla.nekostick.svchost` 迁移到新 ID。
 
 > readonly 实例上管理 API 与 WebUI 不会开放.
@@ -44,6 +45,17 @@ services:
     health: { type: http, path: /healthz, timeout: 5s }
     route: { prefix: /api/my, strip: true }
 ```
+
+### 参数与环境变量模板
+
+`args` 中的字符串以及 `env` 中的每个 value 都支持 host launch templates：
+
+- `${PORT}`、`${HOST}` 使用 host 为本次启动分配的动态值；`${NAME}` 从当前服务自己的环境递归读取 `NAME`。
+- `${NAME@svc-or-guid}` 从目标服务发布的运行时环境读取 `NAME`；同一份 YAML 的 `services:` key 可以直接作为 `svc`，也可以填写 host service GUID。
+- `${HOST:VAR}` 直接透传 host 环境变量 `VAR`。
+- `\$` 转义为字面量 `$`；参数中的 legacy `$PORT` 形式仍受支持。
+
+只有 `args` 和 `env` values 会展开模板，`env` keys 不会展开。
 
 在 WebUI 里新建配置、粘贴 YAML 即可; 也可直接调 API (`X-Api-Key` 头认证):
 

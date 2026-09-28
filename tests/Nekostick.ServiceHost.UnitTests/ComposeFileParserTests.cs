@@ -50,6 +50,37 @@ public sealed class ComposeFileParserTests
         Assert.Equal(["api.example.com"], service.Value.Route.Hosts.ToArray());
     }
 
+    [Fact]
+    public void Parse_template_targets_accept_same_document_guid_host_and_escaped_values()
+    {
+        var document = _parser.Parse("""
+            services:
+              api:
+                source: { path: /tmp/api }
+                args: ['${PORT@other}', '${PORT@11111111-1111-7111-8111-111111111111}', '${HOST:X}', '\${PORT@nope}']
+              other:
+                source: { path: /tmp/other }
+            """);
+
+        Assert.Equal(
+            ["${PORT@other}", "${PORT@11111111-1111-7111-8111-111111111111}", "${HOST:X}", "\\${PORT@nope}"],
+            document.Services["api"].Args.ToArray());
+    }
+
+    [Fact]
+    public void Parse_template_target_unknown_service_rejects_with_value_path()
+    {
+        var exception = Assert.Throws<ComposeValidationException>(() => _parser.Parse("""
+            services:
+              api:
+                source: { path: /tmp/api }
+                args: ['${PORT@nope}']
+            """));
+
+        var error = Assert.Single(exception.Errors, candidate => candidate.Path == "services.api.args");
+        Assert.Contains("nope", error.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("version: 1\nservices:\n  api:\n    source: { path: /tmp/api }", "document.version")]
     [InlineData("services:\n  api:\n    command: run\n    source: { path: /tmp/api }", "services.api.command")]

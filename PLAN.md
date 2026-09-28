@@ -25,7 +25,7 @@ This document is based on the nekostick `main` branch Contracts **1.3.3** (`Host
 - `RouteConfiguration` 有 `MetadataJson` (extension-owned) 可打所有权标记; **`ServiceConfiguration` 没有 metadata 字段**, 服务的所有权只能由 settings lock 中记录的 serviceId 追踪.
 - 路由匹配 `RouteMatcherConfiguration(RouteMatcherType, pattern, hostPatterns, methods)`, `RouteMatcherType.Prefix` 支持段/原始前缀; 目标 `MicroserviceRouteTargetConfiguration(serviceId)` / `ExtensionHandlerRouteTargetConfiguration(handlerId)`; 转发 `ForwardingConfiguration(ForwardingMode.Preserve|Strip|Replace, ...)`.
 - 全局服务**没有** start/stop/restart API (owner-scoped 的 `IExtensionServiceApi.StartAsync` 等只管 extension-owned 服务). 启停 = 改 `Enabled` 后 `ReplaceAsync`, host 监督器自动 reconcile (technical-design §6.2: 新实例先启动并验证健康, 切路由, 再停旧实例; 新实例不健康则保留旧实例). `ReplaceAsync` 发布后启停是**异步**的监督行为, 不保证同步完成.
-- 端口由 host 分配 loopback 端口租约, 通过 `$PORT` 替换传入服务参数.
+- 端口由 host 分配 loopback 端口租约; `args`/`env` values 支持 `${PORT}`/`${HOST}`/`${NAME}`/`${NAME@svc-or-guid}`/`${HOST:VAR}` 及 `\$` 转义, 参数中的 legacy `$PORT` 仍支持; `env` keys 不展开.
 - 设置: `IExtensionConfigurationApi.ReadSettingsAsync()` / `WriteSettingsAsync(expectedVersion, ExtensionSettingsConfiguration)`; `ExtensionSettingsConfiguration(extensionId, schemaVersion, settingsJson, version)` 的 `SettingsJson` 是原始 JSON 字符串; 未初始化时 `bridge.Configuration.Settings` 为 `null`.
 - Settings-change events: subscribe via `context.Host.Events.TrySubscribe(callback)`, filter `@event.Type == nameof(ExtensionCoreEventKind.ExtensionSettingsChanged)`, then re-read settings (including API-key state) before reconciling.
 - `IExtensionHostBridge13.HostInfo` is the live API 1.3.3 host snapshot: it exposes `ReadOnly`, readiness, database/snapshot availability, and the published configuration version used by startup and drift recovery.
@@ -114,8 +114,8 @@ services:
       url: https://example.com/releases/my-api-linux-x64   # 在线来源 (与 path 二选一)
       # path: /opt/bin/my-api                              # 本地来源
       sha256: <可选的期望哈希>                               # 声明则强校验
-    args: ["--serve", "--port", "$PORT"]                    # 参数; $PORT 由 host 替换为分配的 loopback 端口
-    env: { MODE: production }                              # 环境变量 (全局 ServiceConfiguration.Environment)
+    args: ["--serve", "--port", "$PORT"]                    # 参数; 支持 ${PORT}/${HOST}/${NAME}/${NAME@svc-or-guid}/${HOST:VAR}; legacy $PORT 仍支持, \$ 可转义 $
+    env: { MODE: production }                              # 环境变量; 同一 YAML services key 可作为 ${NAME@svc} 的 svc, env key 不展开
     start: eager | lazy                                    # 默认 eager; lazy = 首个请求才启动
     restart: never | on-failure | always                   # 默认 on-failure
     health:                                                # 默认 { type: process }
@@ -130,6 +130,8 @@ services:
 ```
 
 Validation rules: service names match `^[a-z0-9][a-z0-9-]{0,62}$`; exactly one of `source.url`/`source.path` is required; `url` must be HTTPS; `health.type=http` requires `path`; `route.prefix` must start with `/`; unknown fields are rejected. `strictSources` is an optional per-config boolean: when true, every URL/path source must declare `sha256` and missing it is a validation error; when absent or false, the source is accepted and the sync report carries a non-fatal warning.
+
+Template forms in `args` and `env` values: `${PORT}`/`${HOST}` use dynamic launch values; `${NAME}` recursively reads the service's own environment; `${NAME@svc-or-guid}` reads the target service's published runtime environment (a service name from the same YAML document may be used instead of its GUID); `${HOST:VAR}` passes through `VAR`; `\$` escapes a literal `$`; legacy bare `$PORT` in arguments remains supported. Only values are expanded, never environment keys.
 
 ## 5. 同步管线 (100% 可复现的核心)
 
