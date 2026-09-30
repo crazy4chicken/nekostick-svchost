@@ -40,10 +40,10 @@ public sealed class LockServiceEntry
     public List<Guid> RouteIds { get; set; } = new();
 }
 
-/// <summary>Locks one source URL/path, digest, size, and fetch time.</summary>
+/// <summary>Locks one URL, path, or release source, digest, size, and fetch time.</summary>
 public sealed class LockSource
 {
-    /// <summary>Gets or sets the source kind, either url or path.</summary>
+    /// <summary>Gets or sets the source kind, either url, path, or release.</summary>
     [JsonPropertyName("kind")]
     public string Kind { get; set; } = string.Empty;
 
@@ -55,9 +55,29 @@ public sealed class LockSource
     [JsonPropertyName("path")]
     public string? Path { get; set; }
 
+    /// <summary>Gets or sets the release provider key.</summary>
+    [JsonPropertyName("providerKey")]
+    public string? ProviderKey { get; set; }
+
+    /// <summary>Gets or sets the raw provider-specific release spec.</summary>
+    [JsonPropertyName("spec")]
+    public string? Spec { get; set; }
+
+    /// <summary>Gets or sets the resolved release tag.</summary>
+    [JsonPropertyName("tag")]
+    public string? Tag { get; set; }
+
+    /// <summary>Gets or sets the version extracted from the release asset name.</summary>
+    [JsonPropertyName("version")]
+    public string? Version { get; set; }
+
+    /// <summary>Gets or sets the resolved release asset name.</summary>
+    [JsonPropertyName("assetName")]
+    public string? AssetName { get; set; }
+
     /// <summary>Gets or sets the lowercase SHA-256 digest.</summary>
     [JsonPropertyName("sha256")]
-    public string Sha256 { get; set; } = string.Empty;
+    public string? Sha256 { get; set; } = string.Empty;
 
     /// <summary>Gets or sets the source byte length.</summary>
     [JsonPropertyName("size")]
@@ -76,4 +96,10 @@ public sealed class LockSource
     public bool MatchesPath(string path) =>
         string.Equals(Kind, "path", StringComparison.OrdinalIgnoreCase) &&
         string.Equals(Path, path, StringComparison.Ordinal);
+
+    /// <summary>Returns true when this lock identifies the same provider release source.</summary>
+    public bool MatchesRelease(string providerKey, string spec) =>
+        string.Equals(Kind, "release", StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(ProviderKey, providerKey, StringComparison.Ordinal) &&
+        string.Equals(Spec, spec, StringComparison.Ordinal);
 }

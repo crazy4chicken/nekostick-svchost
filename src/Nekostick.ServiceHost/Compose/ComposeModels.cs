@@ -72,15 +72,16 @@ public sealed class ComposeService
     public ImmutableArray<string> Warnings { get; }
 }
 
-/// <summary>Describes an online or local executable source.</summary>
+/// <summary>Describes an online, local, or provider release executable source.</summary>
 public sealed class ComposeSource
 {
-    /// <summary>Creates a source declaration; exactly one URL or path must be supplied.</summary>
-    public ComposeSource(string? url, string? path, string? sha256 = null)
+    /// <summary>Creates a source declaration; exactly one URL, path, or release must be supplied.</summary>
+    public ComposeSource(string? url, string? path, string? sha256 = null, string? release = null)
     {
         Url = string.IsNullOrWhiteSpace(url) ? null : url;
         Path = string.IsNullOrWhiteSpace(path) ? null : path;
         Sha256 = string.IsNullOrWhiteSpace(sha256) ? null : sha256;
+        Release = string.IsNullOrWhiteSpace(release) ? null : release;
     }
 
     /// <summary>Gets the HTTPS source URL, if present.</summary>
@@ -88,6 +89,9 @@ public sealed class ComposeSource
 
     /// <summary>Gets the local source path, if present.</summary>
     public string? Path { get; }
+
+    /// <summary>Gets the provider release source, if present.</summary>
+    public string? Release { get; }
 
     /// <summary>Gets the optional expected SHA-256 digest.</summary>
     public string? Sha256 { get; }

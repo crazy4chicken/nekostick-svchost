@@ -219,7 +219,8 @@ public sealed class ComposeFileParserTests
     [Theory]
     [InlineData("url: https://example.com/api")]
     [InlineData("path: /tmp/api")]
-    public void Parse_strict_sources_rejects_unpinned_url_or_path(string sourceDeclaration)
+    [InlineData("release: github:owner/repo@v1.2.3")]
+    public void Parse_strict_sources_rejects_unpinned_url_path_or_release(string sourceDeclaration)
     {
         var exception = Assert.Throws<ComposeValidationException>(() => _parser.Parse($"""
             strictSources: true
@@ -266,5 +267,53 @@ public sealed class ComposeFileParserTests
 
         Assert.Equal(strictSources, document.StrictSources);
         Assert.Empty(document.Services["api"].Warnings);
+    }
+
+    [Fact]
+    public void Parse_release_source_accepts_unknown_provider_and_declared_sha256()
+    {
+        var sha256 = new string('a', 64);
+        var document = _parser.Parse($"""
+            services:
+              api:
+                source:
+                  release: future-provider:opaque-spec
+                  sha256: {sha256}
+            """);
+
+        Assert.Equal("future-provider:opaque-spec", document.Services["api"].Source.Release);
+        Assert.Equal(sha256, document.Services["api"].Source.Sha256);
+        Assert.Empty(document.Services["api"].Warnings);
+    }
+
+    [Fact]
+    public void Parse_rejects_release_mixed_with_another_source()
+    {
+        var exception = Assert.Throws<ComposeValidationException>(() => _parser.Parse("""
+            services:
+              api:
+                source:
+                  url: https://example.com/api
+                  release: github:owner/repo@v1.2.3
+            """));
+
+        Assert.Contains(exception.Errors, error => error.Path == "services.api.source");
+    }
+
+    [Theory]
+    [InlineData("github:")]
+    [InlineData("Github:owner/repo@main")]
+    [InlineData(":owner/repo@main")]
+    [InlineData("github")]
+    public void Parse_rejects_malformed_release_values(string release)
+    {
+        var exception = Assert.Throws<ComposeValidationException>(() => _parser.Parse($"""
+            services:
+              api:
+                source:
+                  release: "{release}"
+            """));
+
+        Assert.Contains(exception.Errors, error => error.Path == "services.api.source.release");
     }
 }

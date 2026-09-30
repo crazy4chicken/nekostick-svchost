@@ -19,18 +19,20 @@ public sealed partial class ComposeFileParser
         }
 
         var entries = Entries(mapping, path, errors);
-        RejectUnknown(entries, path, new[] { "url", "path", "sha256" }, errors);
+        RejectUnknown(entries, path, new[] { "url", "path", "sha256", "release" }, errors);
 
         var url = ReadOptionalString(entries, "url", path, errors);
         var localPath = ReadOptionalString(entries, "path", path, errors);
         var sha256 = ReadOptionalString(entries, "sha256", path, errors);
+        var release = ReadOptionalString(entries, "release", path, errors);
         var hasUrl = !string.IsNullOrWhiteSpace(url);
         var hasPath = !string.IsNullOrWhiteSpace(localPath);
-        if (hasUrl == hasPath)
+        var hasRelease = !string.IsNullOrWhiteSpace(release);
+        if ((hasUrl ? 1 : 0) + (hasPath ? 1 : 0) + (hasRelease ? 1 : 0) != 1)
         {
             errors.Add(new ComposeValidationError(
                 path,
-                "Exactly one of url or path must be supplied.",
+                "Exactly one of url, path, or release must be supplied.",
                 Line(mapping)));
             return null;
         }
@@ -46,6 +48,20 @@ public sealed partial class ComposeFileParser
                     Line(entries["url"])));
             }
         }
+        if (hasRelease)
+        {
+            var separator = release!.IndexOf(':');
+            if (separator <= 0 ||
+                separator == release.Length - 1 ||
+                !ReleaseProviderKeyRegex.IsMatch(release[..separator]) ||
+                string.IsNullOrWhiteSpace(release[(separator + 1)..]))
+            {
+                errors.Add(new ComposeValidationError(
+                    $"{path}.release",
+                    "Release sources must use '{provider}:{spec}' with a valid provider key and non-empty spec.",
+                    Line(entries["release"])));
+            }
+        }
 
         var hasDeclaredSha256 = !string.IsNullOrWhiteSpace(sha256);
         if (!hasDeclaredSha256)
@@ -55,7 +71,7 @@ public sealed partial class ComposeFileParser
             {
                 errors.Add(new ComposeValidationError(
                     $"{path}.sha256",
-                    "URL and path sources must declare sha256 when strictSources is true.",
+                    "URL, path, and release sources must declare sha256 when strictSources is true.",
                     entries.TryGetValue("sha256", out var shaNode) ? Line(shaNode) : Line(mapping)));
             }
             else
@@ -71,7 +87,7 @@ public sealed partial class ComposeFileParser
                 Line(entries["sha256"])));
         }
 
-        return new ComposeSource(url, localPath, sha256?.ToLowerInvariant());
+        return new ComposeSource(url, localPath, sha256?.ToLowerInvariant(), release);
     }
 
     private static ComposeHealthCheck ParseHealth(

@@ -9,6 +9,9 @@ public sealed partial class ComposeFileParser
     private static readonly Regex NameRegex = new(
         "^[a-z0-9][a-z0-9-]{0,62}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex ReleaseProviderKeyRegex = new(
+        "\\A[a-z0-9][a-z0-9-]*\\z",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly Regex Sha256Regex = new(
         "^[0-9a-fA-F]{64}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);

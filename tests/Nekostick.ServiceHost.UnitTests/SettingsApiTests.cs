@@ -1,0 +1,268 @@
+using System.Collections.Immutable;
+using System.Text;
+using System.Text.Json;
+using Nekolla.Nekostick.Contracts;
+using Nekostick.ServiceHost.Api;
+using Nekostick.ServiceHost.Compose;
+using Nekostick.ServiceHost.Settings;
+using Nekostick.ServiceHost.Sync;
+using Xunit;
+
+namespace Nekostick.ServiceHost.UnitTests;
+
+public sealed class SettingsApiTests
+{
+    private const string TestApiKey = "test-api-key-123456";
+
+    [Fact]
+    public async Task Get_returns_empty_registered_groups_when_settings_are_missing()
+    {
+        using var fixture = await CreateFixtureAsync(initializeSettings: false);
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("GET", string.Empty),
+            CancellationToken.None);
+
+        Assert.Equal(200, response.StatusCode);
+        using var document = await ReadJsonAsync(response);
+        Assert.Equal("releaseProviders", Assert.Single(document.RootElement.EnumerateObject()).Name);
+        Assert.Empty(document.RootElement.GetProperty("releaseProviders").EnumerateObject());
+        Assert.Equal(0, fixture.ConfigurationApi.WriteSettingsCallCount);
+    }
+
+    [Fact]
+    public async Task Put_roundtrips_release_provider_settings_and_preserves_unrelated_settings()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var apiRoute = Guid.CreateVersion7();
+        var webuiRoute = Guid.CreateVersion7();
+        var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
+        {
+            settings.Routes = new SvchostRouteSettings(apiRoute, webuiRoute);
+            settings.Configs["demo"] = new SvchostConfigSettings("services: {}");
+            settings.ReleaseProviders = CreateReleaseProviders("https://old.example/");
+            return settings;
+        });
+        Assert.True(setup.IsSuccess);
+
+        const string payload = "{\"releaseProviders\":{\"github\":{\"mirrors\":[\"https://ghproxy.net/\",\"http://mirror.example/\"]}}}";
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", payload),
+            CancellationToken.None);
+
+        Assert.Equal(200, response.StatusCode);
+        using (var document = await ReadJsonAsync(response))
+        {
+            Assert.Equal(
+                new[] { "https://ghproxy.net/", "http://mirror.example/" },
+                document.RootElement
+                    .GetProperty("releaseProviders")
+                    .GetProperty("github")
+                    .GetProperty("mirrors")
+                    .EnumerateArray()
+                    .Select(mirror => mirror.GetString()!));
+        }
+
+        var persisted = await fixture.SettingsStore.ReadSettingsAsync();
+        Assert.True(persisted.IsSuccess);
+        Assert.Equal(TestApiKey, persisted.Value!.Settings!.ApiKey);
+        Assert.Equal(apiRoute, persisted.Value.Settings.Routes.Api);
+        Assert.Equal(webuiRoute, persisted.Value.Settings.Routes.Webui);
+        Assert.Equal("services: {}", persisted.Value.Settings.Configs["demo"].Yaml);
+        Assert.Equal(
+            new[] { "https://ghproxy.net/", "http://mirror.example/" },
+            persisted.Value.Settings.ReleaseProviders!["github"].Mirrors);
+
+        var getResponse = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("GET", string.Empty),
+            CancellationToken.None);
+        Assert.Equal(200, getResponse.StatusCode);
+        using var getDocument = await ReadJsonAsync(getResponse);
+        Assert.Equal(
+            new[] { "https://ghproxy.net/", "http://mirror.example/" },
+            getDocument.RootElement
+                .GetProperty("releaseProviders")
+                .GetProperty("github")
+                .GetProperty("mirrors")
+                .EnumerateArray()
+                .Select(mirror => mirror.GetString()!));
+    }
+
+    [Fact]
+    public async Task Put_partial_document_preserves_omitted_settings_groups()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
+        {
+            settings.ReleaseProviders = CreateReleaseProviders("https://existing.example/");
+            return settings;
+        });
+        Assert.True(setup.IsSuccess);
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", "{}"),
+            CancellationToken.None);
+
+        Assert.Equal(200, response.StatusCode);
+        using var document = await ReadJsonAsync(response);
+        Assert.Equal(
+            "https://existing.example/",
+            Assert.Single(
+                document.RootElement
+                    .GetProperty("releaseProviders")
+                    .GetProperty("github")
+                    .GetProperty("mirrors")
+                    .EnumerateArray())
+                .GetString());
+
+        var persisted = await fixture.SettingsStore.ReadSettingsAsync();
+        Assert.True(persisted.IsSuccess);
+        Assert.Equal(
+            "https://existing.example/",
+            persisted.Value!.Settings!.ReleaseProviders!["github"].Mirrors!.Single());
+    }
+
+    [Fact]
+    public async Task Put_rejects_invalid_mirror_urls_with_a_bad_request()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var writesBefore = fixture.ConfigurationApi.WriteSettingsCallCount;
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", "{\"releaseProviders\":{\"github\":{\"mirrors\":[\"ftp://mirror.example/\"]}}}"),
+            CancellationToken.None);
+
+        Assert.Equal(400, response.StatusCode);
+        using var document = await ReadJsonAsync(response);
+        var message = document.RootElement.GetProperty("error").GetProperty("message").GetString();
+        Assert.Contains("releaseProviders.github.mirrors[0]", message, StringComparison.Ordinal);
+        Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
+    }
+
+    [Fact]
+    public async Task Put_rejects_unknown_settings_groups_with_a_bad_request()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var writesBefore = fixture.ConfigurationApi.WriteSettingsCallCount;
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", "{\"futureGroup\":{}}"),
+            CancellationToken.None);
+
+        Assert.Equal(400, response.StatusCode);
+        using var document = await ReadJsonAsync(response);
+        Assert.Contains(
+            "futureGroup",
+            document.RootElement.GetProperty("error").GetProperty("message").GetString(),
+            StringComparison.Ordinal);
+        Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
+    }
+
+    [Fact]
+    public async Task Settings_endpoints_require_the_api_key()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var writesBefore = fixture.ConfigurationApi.WriteSettingsCallCount;
+
+        var getResponse = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("GET", string.Empty, apiKey: null),
+            CancellationToken.None);
+        var putResponse = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", "{}", apiKey: null),
+            CancellationToken.None);
+
+        Assert.Equal(401, getResponse.StatusCode);
+        Assert.Equal(401, putResponse.StatusCode);
+        Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
+    }
+
+    private static Dictionary<string, ReleaseProviderSettings> CreateReleaseProviders(params string[] mirrors) =>
+        new(StringComparer.Ordinal)
+        {
+            ["github"] = new ReleaseProviderSettings { Mirrors = new List<string>(mirrors) }
+        };
+
+    private static ExtensionStreamingRequest CreateRequest(
+        string method,
+        string body,
+        string? apiKey = TestApiKey)
+    {
+        IEnumerable<KeyValuePair<string, IEnumerable<string>>> headers = apiKey is null
+            ? Enumerable.Empty<KeyValuePair<string, IEnumerable<string>>>()
+            : new[] { new KeyValuePair<string, IEnumerable<string>>("X-Api-Key", new[] { apiKey }) };
+
+        return new ExtensionStreamingRequest(
+            method,
+            "/svchost/api/settings",
+            headers,
+            new MemoryStream(Encoding.UTF8.GetBytes(body), writable: false));
+    }
+
+    private static async Task<JsonDocument> ReadJsonAsync(ExtensionStreamingResponse response) =>
+        await JsonDocument.ParseAsync(response.BodyStream);
+
+    private static async Task<SettingsApiFixture> CreateFixtureAsync(bool initializeSettings = true)
+    {
+        var configurationApi = new FakeConfigurationApi();
+        var settingsStore = new SettingsStore(configurationApi);
+        var bridge = new FakeBridge();
+        var apiKeyService = new ApiKeyService(settingsStore, bridge);
+        if (initializeSettings)
+        {
+            var initialization = await apiKeyService.InitializeAsync();
+            Assert.True(initialization.Succeeded);
+            var keyWrite = await apiKeyService.SetPermanentKeyAsync(TestApiKey);
+            Assert.True(keyWrite.IsSuccess);
+        }
+        else
+        {
+            apiKeyService.ReloadFromSettings(new SvchostSettings(
+                TestApiKey,
+                new SvchostRouteSettings(Guid.CreateVersion7(), Guid.CreateVersion7())));
+        }
+
+        var composeParser = new ComposeFileParser();
+        var reconciler = new Reconciler(
+            settingsStore,
+            composeParser,
+            new SourceResolver(),
+            new FakeFullConfigurationApi(CreateHostConfigurationSnapshot()));
+        var handler = new SvchostApiHandler(
+            apiKeyService,
+            settingsStore,
+            composeParser,
+            reconciler,
+            bridge);
+        return new SettingsApiFixture(handler, settingsStore, configurationApi);
+    }
+
+    private static HostConfigurationSnapshot CreateHostConfigurationSnapshot() =>
+        new(
+            0,
+            new GlobalSettingsConfiguration(),
+            ImmutableArray<RouteConfiguration>.Empty,
+            ImmutableArray<ServiceConfiguration>.Empty,
+            ImmutableArray<ExtensionRecordConfiguration>.Empty,
+            ImmutableArray<ExtensionSettingsConfiguration>.Empty);
+
+    private sealed class SettingsApiFixture : IDisposable
+    {
+        public SettingsApiFixture(
+            SvchostApiHandler handler,
+            SettingsStore settingsStore,
+            FakeConfigurationApi configurationApi)
+        {
+            Handler = handler;
+            SettingsStore = settingsStore;
+            ConfigurationApi = configurationApi;
+        }
+
+        public SvchostApiHandler Handler { get; }
+
+        public SettingsStore SettingsStore { get; }
+
+        public FakeConfigurationApi ConfigurationApi { get; }
+
+        public void Dispose() => Handler.Dispose();
+    }
+}

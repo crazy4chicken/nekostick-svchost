@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using Nekostick.ServiceHost.Compose;
+using Nekostick.ServiceHost.Settings;
+using Nekostick.ServiceHost.Sync.Releases;
 
 namespace Nekostick.ServiceHost.Sync;
 
@@ -13,16 +15,29 @@ public sealed record SourceResolutionResult(
     bool Reused,
     string? Error)
 {
+    /// <summary>Gets non-fatal warnings produced while resolving the source.</summary>
+    public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
+
     /// <summary>Creates a successful resolution result.</summary>
-    public static SourceResolutionResult Success(string artifactPath, LockSource source, bool reused) =>
-        new(true, artifactPath, source, reused, null);
+    public static SourceResolutionResult Success(
+        string artifactPath,
+        LockSource source,
+        bool reused,
+        IEnumerable<string>? warnings = null) =>
+        new(true, artifactPath, source, reused, null)
+        {
+            Warnings = (warnings ?? Array.Empty<string>()).ToArray()
+        };
 
     /// <summary>Creates a failed resolution result.</summary>
-    public static SourceResolutionResult Failure(string error) =>
-        new(false, null, null, false, error);
+    public static SourceResolutionResult Failure(string error, IEnumerable<string>? warnings = null) =>
+        new(false, null, null, false, error)
+        {
+            Warnings = (warnings ?? Array.Empty<string>()).ToArray()
+        };
 }
 
-/// <summary>Resolves HTTPS and local executable sources into reproducible artifacts.</summary>
+/// <summary>Resolves HTTPS, local, and provider release sources into reproducible artifacts.</summary>
 public sealed partial class SourceResolver
 {
     /// <summary>The default maximum artifact size.</summary>
@@ -39,13 +54,15 @@ public sealed partial class SourceResolver
     private readonly TimeSpan _timeout;
     private readonly long _maximumArtifactBytes;
     private readonly int _retryCount;
+    private readonly ReleaseProviderRegistry _releaseProviders;
 
     /// <summary>Creates a resolver using the shared pooled HttpClient by default.</summary>
     public SourceResolver(
         HttpClient? httpClient = null,
         TimeSpan? timeout = null,
         long maximumArtifactBytes = DefaultMaximumArtifactBytes,
-        int retryCount = DefaultRetryCount)
+        int retryCount = DefaultRetryCount,
+        ReleaseProviderRegistry? releaseProviders = null)
     {
         if (timeout.HasValue && timeout.Value <= TimeSpan.Zero)
         {
@@ -66,6 +83,7 @@ public sealed partial class SourceResolver
         _timeout = timeout ?? DefaultTimeout;
         _maximumArtifactBytes = maximumArtifactBytes;
         _retryCount = retryCount;
+        _releaseProviders = releaseProviders ?? new ReleaseProviderRegistry([new GitHubReleaseProvider(_httpClient)]);
     }
 
     /// <summary>Resolves one source and atomically installs its artifact.</summary>
@@ -76,7 +94,18 @@ public sealed partial class SourceResolver
         ComposeSource source,
         LockSource? previousLock,
         CancellationToken cancellationToken = default) =>
-        ResolveCoreAsync(dataDirectory, configName, serviceName, source, previousLock, cancellationToken);
+        ResolveCoreAsync(dataDirectory, configName, serviceName, source, previousLock, null, cancellationToken);
+
+    /// <summary>Resolves one source using the current provider-specific settings.</summary>
+    public ValueTask<SourceResolutionResult> ResolveAsync(
+        string dataDirectory,
+        string configName,
+        string serviceName,
+        ComposeSource source,
+        LockSource? previousLock,
+        IReadOnlyDictionary<string, ReleaseProviderSettings>? releaseProviderSettings,
+        CancellationToken cancellationToken) =>
+        ResolveCoreAsync(dataDirectory, configName, serviceName, source, previousLock, releaseProviderSettings, cancellationToken);
 
     private async ValueTask<SourceResolutionResult> ResolveCoreAsync(
         string dataDirectory,
@@ -84,6 +113,7 @@ public sealed partial class SourceResolver
         string serviceName,
         ComposeSource source,
         LockSource? previousLock,
+        IReadOnlyDictionary<string, ReleaseProviderSettings>? releaseProviderSettings,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -109,6 +139,19 @@ public sealed partial class SourceResolver
         Directory.CreateDirectory(artifactDirectory);
         Directory.CreateDirectory(temporaryDirectory);
 
+        if (source.Release is not null)
+        {
+            return await ResolveReleaseAsync(
+                    source,
+                    serviceName,
+                    previousLock,
+                    releaseProviderSettings,
+                    _releaseProviders,
+                    artifactPath,
+                    temporaryDirectory,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
         if (source.Url is not null)
         {
             return await ResolveUrlAsync(
@@ -131,7 +174,7 @@ public sealed partial class SourceResolver
                 .ConfigureAwait(false);
         }
 
-        return SourceResolutionResult.Failure("A source URL or path is required.");
+        return SourceResolutionResult.Failure("A source URL, path, or release is required.");
     }
 
 }

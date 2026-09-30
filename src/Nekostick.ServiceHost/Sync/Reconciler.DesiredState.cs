@@ -123,6 +123,7 @@ public sealed partial class Reconciler
                         serviceName,
                         composeService.Source,
                         previousLock?.Source,
+                        settings.ReleaseProviders,
                         cancellationToken)
                     .ConfigureAwait(false);
                 var serviceId = previousLock is not null && IsUuidV7(previousLock.ServiceId)
@@ -168,7 +169,7 @@ public sealed partial class Reconciler
                         resolved.Error ?? "The source could not be resolved.",
                         SyncErrorCode.SourceFailed)
                     {
-                        Warnings = composeService.Warnings,
+                        Warnings = composeService.Warnings.AddRange(resolved.Warnings),
                         NodeLocal = failedServiceId != Guid.Empty
                     });
                     continue;
@@ -212,7 +213,7 @@ public sealed partial class Reconciler
                         $"The template target service '{exception.Target}' could not be resolved.",
                         SyncErrorCode.ReconcileFailed)
                     {
-                        Warnings = composeService.Warnings
+                        Warnings = composeService.Warnings.AddRange(resolved.Warnings)
                     });
                     continue;
                 }
@@ -269,7 +270,7 @@ public sealed partial class Reconciler
                     routeIds.ToImmutableArray(),
                     null)
                 {
-                    Warnings = composeService.Warnings
+                    Warnings = composeService.Warnings.AddRange(resolved.Warnings)
                 });
             }
         }

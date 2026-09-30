@@ -110,6 +110,11 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
                 return await HandleBootstrapKeyAsync(request.BodyStream, ct).ConfigureAwait(false);
             }
 
+            if (segments.Length == 1 && segments[0].Equals("settings", StringComparison.Ordinal))
+            {
+                return await HandleSettingsAsync(request.Method, request.BodyStream, ct).ConfigureAwait(false);
+            }
+
             if (segments.Length == 1 && segments[0].Equals("configs", StringComparison.Ordinal))
             {
                 return request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase)
@@ -267,6 +272,9 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
          segments.Length == 2 &&
          segments[0].Equals("bootstrap", StringComparison.Ordinal) &&
          segments[1].Equals("key", StringComparison.Ordinal)) ||
+        (method.Equals("PUT", StringComparison.OrdinalIgnoreCase) &&
+         segments.Length == 1 &&
+         segments[0].Equals("settings", StringComparison.Ordinal)) ||
         (method.Equals("PUT", StringComparison.OrdinalIgnoreCase) &&
          segments.Length == 2 &&
          segments[0].Equals("configs", StringComparison.Ordinal));

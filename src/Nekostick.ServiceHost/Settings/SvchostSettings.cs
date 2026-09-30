@@ -77,6 +77,14 @@ public sealed class SvchostConfigSettings
     public string[] Stopped { get; set; } = Array.Empty<string>();
 }
 
+/// <summary>Contains asset-download mirror prefixes for one release provider.</summary>
+public sealed class ReleaseProviderSettings
+{
+    /// <summary>Gets or sets mirror URL prefixes, tried in their configured order.</summary>
+    [JsonPropertyName("mirrors")]
+    public List<string>? Mirrors { get; set; } = new();
+}
+
 /// <summary>Represents the raw JSON document persisted as extension settings.</summary>
 public sealed class SvchostSettings
 {
@@ -89,13 +97,17 @@ public sealed class SvchostSettings
     public SvchostSettings(
         string? apiKey,
         SvchostRouteSettings routes,
-        IDictionary<string, SvchostConfigSettings>? configs = null)
+        IDictionary<string, SvchostConfigSettings>? configs = null,
+        IDictionary<string, ReleaseProviderSettings>? releaseProviders = null)
     {
         ApiKey = apiKey;
         Routes = routes ?? throw new ArgumentNullException(nameof(routes));
         Configs = configs is null
             ? new Dictionary<string, SvchostConfigSettings>(StringComparer.Ordinal)
             : new Dictionary<string, SvchostConfigSettings>(configs, StringComparer.Ordinal);
+        ReleaseProviders = releaseProviders is null
+            ? new Dictionary<string, ReleaseProviderSettings>(StringComparer.Ordinal)
+            : new Dictionary<string, ReleaseProviderSettings>(releaseProviders, StringComparer.Ordinal);
     }
 
     /// <summary>Gets or sets the permanent API key, if configured.</summary>
@@ -109,6 +121,11 @@ public sealed class SvchostSettings
     /// <summary>Gets or sets named YAML configurations.</summary>
     [JsonPropertyName("configs")]
     public Dictionary<string, SvchostConfigSettings> Configs { get; set; } =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Gets or sets provider-specific release download settings.</summary>
+    [JsonPropertyName("releaseProviders")]
+    public Dictionary<string, ReleaseProviderSettings>? ReleaseProviders { get; set; } =
         new(StringComparer.Ordinal);
 
     /// <summary>Creates the first settings document for a host.</summary>

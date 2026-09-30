@@ -26,19 +26,25 @@ public sealed partial class SourceResolver
 
     private static void AtomicInstall(string temporaryPath, string artifactPath)
     {
-        // The host execs the artifact path directly (no shell), so the executable bit must be
-        // present. New files default to 0666 & ~umask on POSIX; set 0755 on the temporary file
-        // BEFORE the move so the artifact never exists without it.
+        SetExecutable(temporaryPath);
+        if (Directory.Exists(artifactPath))
+        {
+            Directory.Delete(artifactPath, recursive: true);
+        }
+
+        File.Move(temporaryPath, artifactPath, true);
+    }
+
+    private static void SetExecutable(string artifactPath)
+    {
         if (!OperatingSystem.IsWindows())
         {
             File.SetUnixFileMode(
-                temporaryPath,
+                artifactPath,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
                 UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
                 UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
         }
-
-        File.Move(temporaryPath, artifactPath, true);
     }
 
     private static bool MatchesExpectedDigest(string? expectedDigest, string actualDigest) =>
@@ -69,6 +75,23 @@ public sealed partial class SourceResolver
             if (File.Exists(path))
             {
                 File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
             }
         }
         catch (IOException)

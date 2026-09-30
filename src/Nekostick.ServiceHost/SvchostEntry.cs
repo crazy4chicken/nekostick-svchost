@@ -3,6 +3,7 @@ using Nekostick.ServiceHost.Api;
 using Nekostick.ServiceHost.Compose;
 using Nekostick.ServiceHost.Settings;
 using Nekostick.ServiceHost.Sync;
+using Nekostick.ServiceHost.Sync.Releases;
 using Nekostick.ServiceHost.Webui;
 
 namespace Nekostick.ServiceHost;
@@ -173,10 +174,11 @@ public sealed partial class SvchostEntry : IExtensionEntry
         }
 
         var composeParser = new ComposeFileParser();
+        var releaseProviders = new ReleaseProviderRegistry([new GitHubReleaseProvider()]);
         var reconciler = new Reconciler(
             settingsStore,
             composeParser,
-            new SourceResolver(),
+            new SourceResolver(releaseProviders: releaseProviders),
             bridge.FullConfiguration,
             bridge.DataDirectory,
             bridge.Supervisor);
