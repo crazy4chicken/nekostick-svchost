@@ -10,6 +10,21 @@ export interface StatusResponse {
   configs: number
 }
 
+export interface ReleaseProviderSettings {
+  mirrors: string[]
+}
+
+export interface ReleaseProvidersSettings {
+  [providerKey: string]: ReleaseProviderSettings
+}
+
+export interface SettingsResponse {
+  releaseProviders: ReleaseProvidersSettings
+  [group: string]: unknown
+}
+
+export type SettingsUpdate = Partial<SettingsResponse>
+
 export interface ServiceDeclSummary {
   name: string
   source?: string
@@ -17,7 +32,17 @@ export interface ServiceDeclSummary {
 
 export interface LockedServiceSummary {
   serviceId?: string
-  source?: { kind?: string; url?: string; path?: string; sha256?: string }
+  source?: {
+    kind?: string
+    url?: string
+    path?: string
+    providerKey?: string
+    spec?: string
+    tag?: string
+    version?: string
+    assetName?: string
+    sha256?: string
+  }
 }
 
 export interface ConfigLockSummary {
@@ -29,6 +54,7 @@ export interface ServiceSyncResult {
   succeeded: boolean
   error?: string
   errorKind?: string
+  warnings: string[]
 }
 
 export interface SyncReport {

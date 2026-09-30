@@ -17,6 +17,7 @@ const MARKER_OWNER = 'svchost-compose'
 // Rule mirrors: src/Nekostick.ServiceHost/Compose/ComposeFileParser.Validation.cs
 const SERVICE_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/
 const SHA256 = /^[0-9a-fA-F]{64}$/
+const RELEASE_SOURCE = /^[a-z0-9][a-z0-9-]*:.+$/
 const DURATION = /^[0-9]+(\.[0-9]+)?(ms|s|m|h)$/i
 const START_MODES = ['eager', 'lazy']
 const RESTART_POLICIES = ['never', 'on-failure', 'always']
@@ -24,7 +25,7 @@ const HEALTH_TYPES = ['process', 'tcp', 'http']
 
 const ROOT_KEYS = ['services', 'strictSources']
 const SERVICE_KEYS = ['source', 'args', 'env', 'start', 'restart', 'health', 'route']
-const SOURCE_KEYS = ['url', 'path', 'sha256']
+const SOURCE_KEYS = ['url', 'path', 'release', 'sha256']
 const HEALTH_KEYS = ['type', 'path', 'timeout']
 const ROUTE_KEYS = ['prefix', 'strip', 'methods', 'hosts']
 
@@ -201,10 +202,23 @@ function validateSource(
 
   const url = scalarString(yaml, entries['url']?.value ?? null)
   const localPath = scalarString(yaml, entries['path']?.value ?? null)
-  if ((url === null || url === '') === (localPath === null || localPath === '')) {
+  const release = scalarString(yaml, entries['release']?.value ?? null)
+  const declaredSourceCount =
+    (url !== null && url !== '' ? 1 : 0) +
+    (localPath !== null && localPath !== '' ? 1 : 0) +
+    (release !== null && release !== '' ? 1 : 0)
+  if (declaredSourceCount !== 1) {
     markers.push(
       markerAt(model, pair.value ?? pair.key,
-      `${path} must declare exactly one of url or path.`,
+      `${path} must declare exactly one of url, path, or release.`,
+      monaco.MarkerSeverity.Error,),
+    )
+  }
+
+  if (release !== null && release !== '' && !RELEASE_SOURCE.test(release)) {
+    markers.push(
+      markerAt(model, entries['release']?.value ?? entries['release']?.key ?? pair.value ?? pair.key,
+      "release must use '{provider}:{spec}' with a lowercase provider key and non-empty spec.",
       monaco.MarkerSeverity.Error,),
     )
   }
@@ -213,7 +227,7 @@ function validateSource(
   const sha256 = scalarString(yaml, shaPair?.value ?? null)
   if (sha256 === null || sha256 === '') {
     const message = strictSources
-      ? 'URL and path sources must declare sha256 when strictSources is true.'
+      ? 'URL, path, and release sources must declare sha256 when strictSources is true.'
       : 'The source does not declare sha256; source content is not pinned by the compose document.'
     markers.push(
       markerAt(model, shaPair?.value ?? pair.value ?? pair.key,
@@ -395,10 +409,10 @@ interface KeyDef {
 const KEY_DEFS: Record<string, Record<string, KeyDef>> = {
   '': {
     services: { doc: 'Service definitions keyed by name (^[a-z0-9][a-z0-9-]{0,62}$).', block: true },
-    strictSources: { doc: 'When true, url/path sources must declare a sha256 digest.' },
+    strictSources: { doc: 'When true, url/path/release sources must declare a sha256 digest.' },
   },
   'services.*': {
-    source: { doc: 'Executable source: exactly one of url or path, optional sha256 pinning.', block: true },
+    source: { doc: 'Executable source: exactly one of url, path, or release, optional sha256 pinning.', block: true },
     args: { doc: 'Process arguments as a YAML sequence.' },
     env: { doc: 'Environment variable overrides (KEY: value).', block: true },
     start: { doc: 'When to start: eager (with the config) or lazy (first request).' },
@@ -409,6 +423,7 @@ const KEY_DEFS: Record<string, Record<string, KeyDef>> = {
   'services.*.source': {
     url: { doc: 'HTTPS URL to download the executable from.' },
     path: { doc: 'Node-local filesystem path of the executable.' },
+    release: { doc: "Provider release spec using 'provider:spec', e.g. github:owner/repo." },
     sha256: { doc: 'Expected SHA-256 of the source content (64 hex characters).' },
   },
   'services.*.health': {

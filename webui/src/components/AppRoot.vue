@@ -8,6 +8,7 @@ import BootstrapSetup from './BootstrapSetup.vue'
 import ConfigList from './ConfigList.vue'
 import KeyGate from './KeyGate.vue'
 import ServicesDashboard from './ServicesDashboard.vue'
+import SettingsView from './SettingsView.vue'
 
 type Phase = 'loading' | 'bootstrap' | 'gate' | 'main' | 'unreachable'
 
@@ -118,6 +119,9 @@ onMounted(boot)
           </n-tab-pane>
           <n-tab-pane name="configs" tab="Configs">
             <ConfigList />
+          </n-tab-pane>
+          <n-tab-pane name="settings" tab="Settings">
+            <SettingsView />
           </n-tab-pane>
         </n-tabs>
       </template>

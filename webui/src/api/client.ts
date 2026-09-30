@@ -6,6 +6,8 @@ import type {
   ManagedService,
   ServiceDeclSummary,
   ServiceSyncResult,
+  SettingsResponse,
+  SettingsUpdate,
   StatusResponse,
   SyncReport,
 } from './types'
@@ -87,6 +89,19 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
+function normalizeSettings(raw: unknown): SettingsResponse {
+  const rec = asRecord(raw)
+  const providers = asRecord(rec.releaseProviders)
+  const releaseProviders: SettingsResponse['releaseProviders'] = {}
+  for (const [providerKey, value] of Object.entries(providers)) {
+    const provider = asRecord(value)
+    releaseProviders[providerKey] = {
+      mirrors: Array.isArray(provider.mirrors) ? provider.mirrors.map((mirror) => String(mirror)) : [],
+    }
+  }
+  return { ...rec, releaseProviders }
+}
+
 function normalizeServices(raw: unknown): ServiceDeclSummary[] {
   if (!Array.isArray(raw)) return []
   return raw.map((item) => {
@@ -107,6 +122,7 @@ function toServiceSyncResult(name: string, value: unknown): ServiceSyncResult {
     succeeded: Boolean(entry.succeeded ?? entry.success ?? entry.ok),
     error: error == null ? undefined : String(error),
     errorKind: entry.errorKind == null ? undefined : String(entry.errorKind),
+    warnings: Array.isArray(entry.warnings) ? entry.warnings.map((warning) => String(warning)) : [],
   }
 }
 
@@ -161,6 +177,12 @@ function normalizeManagedService(raw: unknown): ManagedService {
 }
 
 export const api = {
+
+  getSettings: () =>
+    request<unknown>('GET', '/settings').then(normalizeSettings),
+
+  putSettings: (settings: SettingsUpdate) =>
+    request<unknown>('PUT', '/settings', settings).then(normalizeSettings),
   getStatus: () => request<StatusResponse>('GET', '/status'),
 
   setBootstrapKey: (bootstrapKey: string, apiKey: string) =>
