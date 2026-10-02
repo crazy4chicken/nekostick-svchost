@@ -7,6 +7,7 @@ import {
   NSpin,
   NTable,
   NTag,
+  NTooltip,
   NText,
   useDialog,
   useMessage,
@@ -139,7 +140,38 @@ onMounted(load)
       </thead>
       <tbody>
         <tr v-for="config in configs" :key="config.name">
-          <td class="mono">{{ config.name }}</td>
+          <td>
+            <div class="config-title">
+              <span class="mono">{{ config.name }}</span>
+              <div class="config-badges">
+                <n-tooltip v-if="config.serviceScope" placement="top">
+                  <template #trigger>
+                    <n-tag
+                      size="tiny"
+                      :type="config.serviceScope === 'global' ? 'info' : 'success'"
+                      :bordered="false"
+                    >
+                      {{ config.serviceScope }}
+                    </n-tag>
+                  </template>
+                  {{
+                    config.serviceScope === 'global'
+                      ? 'Shared service namespace across config files.'
+                      : 'Services are local to this config file.'
+                  }}
+                </n-tooltip>
+                <n-tooltip v-if="config.strictSources === true" placement="top">
+                  <template #trigger>
+                    <n-tag size="tiny" type="warning" :bordered="false">strict sources</n-tag>
+                  </template>
+                  Sources must declare a SHA-256 digest.
+                </n-tooltip>
+                <n-tag size="tiny" :bordered="false">
+                  {{ config.services.length }} {{ config.services.length === 1 ? 'service' : 'services' }}
+                </n-tag>
+              </div>
+            </div>
+          </td>
           <td>{{ config.services.map((s) => s.name).join(', ') || '—' }}</td>
           <td>{{ lockCount(config) }}</td>
           <td>
@@ -195,6 +227,18 @@ onMounted(load)
 .centered {
   display: block;
   margin: 64px auto;
+}
+.config-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.config-badges {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 .mono {
   font-family: 'SF Mono', Menlo, Consolas, monospace;

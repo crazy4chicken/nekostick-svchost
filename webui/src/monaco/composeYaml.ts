@@ -22,8 +22,9 @@ const DURATION = /^[0-9]+(\.[0-9]+)?(ms|s|m|h)$/i
 const START_MODES = ['eager', 'lazy']
 const RESTART_POLICIES = ['never', 'on-failure', 'always']
 const HEALTH_TYPES = ['process', 'tcp', 'http']
+const SERVICE_SCOPES = ['global', 'document']
 
-const ROOT_KEYS = ['services', 'strictSources']
+const ROOT_KEYS = ['services', 'serviceScope', 'strictSources']
 const SERVICE_KEYS = ['source', 'args', 'env', 'start', 'restart', 'health', 'route']
 const SOURCE_KEYS = ['url', 'path', 'release', 'sha256']
 const HEALTH_KEYS = ['type', 'path', 'timeout']
@@ -332,6 +333,7 @@ function validateDocument(monaco: MonacoApi, model: MonacoTextModel, yaml: YamlL
   }
 
   const strictSources = scalarString(yaml, root['strictSources']?.value ?? null)?.toLowerCase() === 'true'
+  validateEnum(monaco, model, yaml, root['serviceScope'], 'serviceScope', SERVICE_SCOPES, markers)
 
   const servicesPair = root['services']
   if (!servicesPair?.value || !yaml.isMap(servicesPair.value)) {
@@ -409,6 +411,7 @@ interface KeyDef {
 const KEY_DEFS: Record<string, Record<string, KeyDef>> = {
   '': {
     services: { doc: 'Service definitions keyed by name (^[a-z0-9][a-z0-9-]{0,62}$).', block: true },
+    serviceScope: { doc: 'Service namespace: shared across config files (global) or local to this config file (document).' },
     strictSources: { doc: 'When true, url/path/release sources must declare a sha256 digest.' },
   },
   'services.*': {
@@ -443,6 +446,10 @@ const VALUE_DEFS: Record<string, { value: string; doc: string }[]> = {
   strictSources: [
     { value: 'true', doc: 'Sources without sha256 are rejected.' },
     { value: 'false', doc: 'Sources without sha256 only produce a warning.' },
+  ],
+  serviceScope: [
+    { value: 'global', doc: 'Share service names across config files.' },
+    { value: 'document', doc: 'Keep service names local to this config file.' },
   ],
   start: [
     { value: 'eager', doc: 'Start as soon as the configuration is applied.' },

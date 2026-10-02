@@ -156,8 +156,12 @@ export function syncReportEntries(report: SyncReport | null): ServiceSyncResult[
 
 function normalizeConfigSummary(raw: unknown): ConfigSummary {
   const rec = asRecord(raw)
+  const serviceScope =
+    typeof rec.serviceScope === 'string' ? rec.serviceScope.toLowerCase() : null
   return {
     name: String(rec.name ?? 'unnamed'),
+    serviceScope: serviceScope === 'global' || serviceScope === 'document' ? serviceScope : null,
+    strictSources: typeof rec.strictSources === 'boolean' ? rec.strictSources : null,
     services: normalizeServices(rec.services),
     lock: rec.lock ? (asRecord(rec.lock) as ConfigSummary['lock']) : null,
     lastSync: rec.lastSync ? normalizeSyncReport(rec.lastSync) : null,

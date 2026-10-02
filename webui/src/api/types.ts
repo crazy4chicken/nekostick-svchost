@@ -81,6 +81,8 @@ export interface DeleteConfigResponse {
 
 export interface ConfigSummary {
   name: string
+  serviceScope: 'global' | 'document' | null
+  strictSources: boolean | null
   services: ServiceDeclSummary[]
   lock: ConfigLockSummary | null
   lastSync: SyncReport | null
