@@ -10,7 +10,7 @@
 
 - **声明式同步**: 每个配置文件描述一组服务 (来源/参数/环境变量/健康检查/路由), 扩展持续把 host 实际状态调和到配置描述的状态
 - **可复现来源**: 支持 HTTPS URL、本地文件或 release provider (如 GitHub release). URL 首次解析后锁定 SHA; 锁定产物缺失或损坏而需要重下时, 内容与锁定 SHA 不符会报错. path 每次同步重新计算 SHA; 未显式声明 `sha256` 时内容变化会作为新来源更新 lock, 显式摘要不符时报错. release 按 provider/spec/tag/version/assetName 及可用的上游 digest 复用; GitHub 提供的 digest 变化时会重新下载并更新 lock. 显式 `source.sha256` 才能固定用户要求的内容; 缺少摘要时默认接受可变来源并给出 warning.
-- **多配置文件**: 任意多份命名配置, 各自的产物隔离在 data 目录的独立子目录
+- **多配置文件**: 任意多份命名配置; `serviceScope: global` (默认) 共用 `<data>/svchost/global`, `document` 按配置名隔离; 详见 [Compose 配置参考](docs/compose.md).
 - **实时启停**: 监听设置变更事件, 不重启 host 即可应用更新; 服务更新走 host 内建的蓝绿切换
 - **WebUI + API**: `/svchost` 提供管理界面, `/svchost/api` 提供 REST API, API key 认证
 
@@ -34,6 +34,7 @@
 
 ```yaml
 strictSources: false                                           # true 时拒绝未声明 sha256 的 url/path/release 来源
+serviceScope: global                                         # 可选, 默认 global; document 时按配置名隔离.
 services:
   my-api:
     source:

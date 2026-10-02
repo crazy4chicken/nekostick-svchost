@@ -18,7 +18,7 @@
 
 3. 让 asset 的 `version` 段符合 ref 分类规则. SemVer ref 要求 release tag 和至少一个匹配服务/架构的 asset version 与 ref 的 SemVer identity 相等; build metadata 不参与比较, 没有匹配 asset 时拒绝. Commit ref 要求 GitHub release 的 `target_commitish` 以该前缀开头, 且 asset version 也以该前缀开头; 发布时应将 `target_commitish` 设为目标 commit 的完整 SHA, 而不是通常不匹配的分支名. 其他 ref 按精确 tag 匹配 release; asset version 不与 tag 完全相同只产生 warning, 不会因此拒绝.
 4. 每个 ZIP 会整体解压. 入口可执行文件必须直接位于 ZIP 解压根目录, 文件名为 Compose service key (`serviceId`). Windows 也接受 `{serviceId}.exe`; POSIX 使用无扩展名的 `{serviceId}`. POSIX 下入口内容必须是目标平台可执行程序; svchost 安装时只把入口权限设为 `0755` (`rwxr-xr-x`), 不要求 ZIP 保存其 Unix executable mode, 也不会恢复其他文件的 Unix 权限位.
-   ZIP 内根路径、越出解压目录的路径会导致安装失败; 指向同一输出路径的重复文件条目也会失败. 服务进程 CWD 是 `<data>/svchost/<config>`, 不是 ZIP 解压目录; 随包资源应通过入口程序自身路径定位, 不要依赖 CWD.
+   ZIP 内根路径、越出解压目录的路径会导致安装失败; 指向同一输出路径的重复文件条目也会失败. 服务进程 CWD 是当前 `serviceScope` 的 service root, 不是 ZIP 解压目录: 未设置或 `global` 时为 `<data>/svchost/global`, `document` 时为 `<data>/svchost/<configName>`. 随包资源应通过入口程序自身路径定位, 不要依赖 CWD; 详见 [Compose 配置参考](compose.md).
 5. 计算每个 ZIP asset 的 SHA-256, 在用户配置中建议声明 `source.sha256`. 摘要针对 ZIP 文件本身, 不是 ZIP 内的入口文件. 同一份 Compose 中 `source.sha256` 是固定值; 若多架构 ZIP 摘要不同, 该值不能同时匹配所有架构节点. `strictSources: true` 会要求每个来源都显式声明摘要, 因此只在所有目标节点都能使用相同摘要时启用.
 6. 在服务仓库提交一份 `svchost.compose.yaml` 示例, 并在 GitHub release notes 中链接该文件及各架构 asset, 方便使用者直接复制配置.
 

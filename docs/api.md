@@ -10,13 +10,17 @@
 | `POST` | `/svchost/api/bootstrap/key` | `X-Api-Key` | Bootstrap 模式下设置永久 API key; body 为 `{"apiKey":"..."}`, `apiKey` 字符串长度至少为 16. 不在 bootstrap 模式时返回 `403`. |
 | `GET` | `/svchost/api/settings` | `X-Api-Key` | 读取 settings API 当前注册的 settings groups. |
 | `PUT` | `/svchost/api/settings` | `X-Api-Key` | 按 settings group 更新扩展设置, 详见下文. |
-| `GET` | `/svchost/api/configs` | `X-Api-Key` | 列出配置名称、服务、lock 摘要及最近一次同步报告. |
+| `GET` | `/svchost/api/configs` | `X-Api-Key` | 列出配置名称、服务、`serviceScope`、`strictSources`、lock 摘要及最近一次同步报告; YAML 无法解析时 `serviceScope` 与 `strictSources` 为 `null`. |
 | `GET` | `/svchost/api/configs/{name}` | `X-Api-Key` | 读取指定配置的 YAML、lock 和最近一次同步报告. |
 | `PUT` | `/svchost/api/configs/{name}` | `X-Api-Key` | 创建或更新配置并触发全量 reconciliation; body 为 `{"yaml":"<compose YAML>"}`. |
-| `DELETE` | `/svchost/api/configs/{name}` | `X-Api-Key` | 删除指定配置, 并触发其服务、路由及本地配置产物的清理. |
+| `DELETE` | `/svchost/api/configs/{name}` | `X-Api-Key` | 删除指定配置, 并触发其服务、路由及本地配置产物的清理; 清理方式按 `serviceScope` 区分, 详见下文. |
 | `POST` | `/svchost/api/configs/{name}/sync` | `X-Api-Key` | 要求该配置存在, 然后触发全量 reconciliation; 本次会读取并处理 settings 中的所有配置. |
 | `GET` | `/svchost/api/services` | `X-Api-Key` | 返回受管服务的启用状态、生命周期/健康状态及运行时信息. |
 | `POST` | `/svchost/api/services/{config}/{service}/{action}` | `X-Api-Key` | 请求单个服务 `start`、`stop` 或 `restart`; `start`/`stop` 会持久化更新配置的 `stopped` 列表并触发全量 reconcile. `restart` 先禁用并全量 reconcile, 成功后再启用并执行第二次全量 reconcile. 生命周期变更由 Host 异步调和, 不保证请求返回时进程状态已完成切换. |
+
+`PUT /svchost/api/configs/{name}` 会校验并保存单份 Compose YAML, 但不会预先检查它与其他配置的 global 服务名冲突. 若保存后发现冲突, 本次请求仍返回 `200` 和 `succeeded: false` 的同步报告; 配置已写入, 冲突会继续阻断后续 reconciliation, 直到修复.
+
+`DELETE /svchost/api/configs/{name}` 按该配置可解析出的 `serviceScope` 清理数据: `document` 删除整个 `<data>/svchost/{name}` service root; `global` 只删除该配置对应的 `<data>/svchost/global/artifacts/<serviceName>` 目录, 服务名取可解析 YAML 的声明与 lock 条目的并集, 并保留仍由其他 global 配置声明或锁定的名称. 若该配置 YAML 无法解析, scope 默认按 `global` 处理, 此时可用服务名来自 lock.
 
 配置列表和详情的 `lastSync` 仅保存在当前 API handler 的内存中, 表示最近一次由 API 操作触发的 reconcile report; 后台事件、定时 drift 检查和启动 reconcile 不会更新它. 扩展重启后 `lastSync` 为 `null`; 若某次 report 中不含某配置, 该配置的缓存不会更新.
 
@@ -54,4 +58,4 @@ provider key 不会与已注册的 provider 列表比对, 因此未知 key 可�
 
 ## 校验与错误
 
-配置 YAML 校验失败以及 bootstrap key 请求体/`apiKey` 校验失败返回 `422`; settings JSON、group 或 mirror 校验失败返回 `400`. `{name}`、`{config}` 或 `{service}` 不符合 `^[a-z0-9][a-z0-9-]{0,62}$` 时返回 `404`.
+配置 YAML 校验失败以及 bootstrap key 请求体/`apiKey` 校验失败返回 `422`; settings JSON、group 或 mirror 校验失败返回 `400`. `{name}`、`{config}` 或 `{service}` 不符合 `^[a-z0-9][a-z0-9-]{0,62}$` 时返回 `404`. 配置名 `{name}`、`{config}` 还不能是 `global` (大小写不敏感); settings 校验将其报告为非法配置名, 对应 API 路径返回 `404`. 此保留规则只适用于配置名, 服务名 `global` 合法.
