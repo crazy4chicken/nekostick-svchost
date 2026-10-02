@@ -9,6 +9,7 @@ public sealed class ServiceLogRecorder : IDisposable
 {
     private const int ChannelCapacity = 4096;
     private static readonly TimeSpan DisposeDrainTimeout = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan ImmediateResubscribeCooldown = TimeSpan.FromSeconds(2);
 
     private readonly IExtensionServiceOutputApi? _outputApi;
     private readonly IExtensionLogger? _logger;
@@ -347,6 +348,10 @@ public sealed class ServiceLogRecorder : IDisposable
         {
             slot.Subscription = result.Subscription;
             slot.MarkOpened(generation);
+            _ = EnqueueMarkerEvent(new PumpEvent(
+                PumpEventKind.Marker,
+                target,
+                MarkerText: $"output stream attached ({GetStreamName(stream)})"));
             return;
         }
 
@@ -450,6 +455,18 @@ public sealed class ServiceLogRecorder : IDisposable
         try
         {
             _events.Writer.WriteAsync(pumpEvent).AsTask().GetAwaiter().GetResult();
+            WakePump();
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task EnqueueMarkerEvent(PumpEvent pumpEvent)
+    {
+        try
+        {
+            await _events.Writer.WriteAsync(pumpEvent).ConfigureAwait(false);
             WakePump();
         }
         catch
@@ -621,6 +638,13 @@ public sealed class ServiceLogRecorder : IDisposable
                     }
 
                     break;
+                case PumpEventKind.Marker:
+                    if (!pumpEvent.Target.IsRemoved && pumpEvent.MarkerText is not null)
+                    {
+                        GetOrCreateWriter(pumpEvent.Target)?.AppendMarker(pumpEvent.MarkerText);
+                    }
+
+                    break;
                 case PumpEventKind.Completed:
                     ProcessCompletion(
                         pumpEvent.Target,
@@ -647,17 +671,56 @@ public sealed class ServiceLogRecorder : IDisposable
         int generation,
         ExtensionServiceOutputCompletionReason reason)
     {
-        _ = reason;
         if (target.IsRemoved || !slot.MarkCompleted(generation))
         {
             return;
         }
 
-        if (_writers.TryGetValue(target.Target.ServiceId, out var writerState) &&
-            ReferenceEquals(writerState.Target, target))
+        var stream = GetStream(target, slot);
+        var writer = GetOrCreateWriter(target);
+        writer?.FlushPartial();
+        writer?.AppendMarker(
+            $"output stream ended: {GetCompletionReasonName(reason)} ({GetStreamName(stream)})");
+
+        if (reason == ExtensionServiceOutputCompletionReason.ProcessExited &&
+            target.IsActive &&
+            TryBeginImmediateResubscribe(target))
         {
-            writerState.Writer.FlushPartial();
+            Subscribe(target, slot, stream);
         }
+    }
+
+    private static ExtensionServiceOutputStream GetStream(TargetState target, SubscriptionSlot slot) =>
+        ReferenceEquals(slot, target.Stdout)
+            ? ExtensionServiceOutputStream.Stdout
+            : ExtensionServiceOutputStream.Stderr;
+
+    private static string GetStreamName(ExtensionServiceOutputStream stream) => stream switch
+    {
+        ExtensionServiceOutputStream.Stdout => "stdout",
+        ExtensionServiceOutputStream.Stderr => "stderr",
+        _ => "stderr"
+    };
+
+    private static string GetCompletionReasonName(ExtensionServiceOutputCompletionReason reason) => reason switch
+    {
+        ExtensionServiceOutputCompletionReason.ProcessExited => "process-exited",
+        ExtensionServiceOutputCompletionReason.Faulted => "faulted",
+        ExtensionServiceOutputCompletionReason.HostTeardown => "host-teardown",
+        _ => reason.ToString().ToLowerInvariant()
+    };
+
+    private static bool TryBeginImmediateResubscribe(TargetState target)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var previous = target.LastImmediateResubscribeAt;
+        if (previous.HasValue && now - previous.Value < ImmediateResubscribeCooldown)
+        {
+            return false;
+        }
+
+        target.LastImmediateResubscribeAt = now;
+        return true;
     }
 
     private ServiceLogWriter? GetOrCreateWriter(TargetState target)
@@ -719,6 +782,7 @@ public sealed class ServiceLogRecorder : IDisposable
         private int _removed;
 
         public ServiceLogTarget Target { get; } = target;
+        public DateTimeOffset? LastImmediateResubscribeAt { get; set; }
         public SubscriptionSlot Stdout { get; } = new();
         public SubscriptionSlot Stderr { get; } = new();
         public bool IsActive => Volatile.Read(ref _active) != 0;
@@ -882,6 +946,7 @@ public sealed class ServiceLogRecorder : IDisposable
     {
         Chunk,
         Dropped,
+        Marker,
         Completed,
         RemoveTarget,
         UpdateLiveLines
@@ -895,5 +960,6 @@ public sealed class ServiceLogRecorder : IDisposable
         byte[]? Data = null,
         long ByteCount = 0,
         ExtensionServiceOutputCompletionReason CompletionReason = default,
-        ServiceOutputSink? Sink = null);
+        ServiceOutputSink? Sink = null,
+        string? MarkerText = null);
 }

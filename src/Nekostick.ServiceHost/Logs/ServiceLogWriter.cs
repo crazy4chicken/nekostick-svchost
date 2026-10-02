@@ -98,9 +98,26 @@ public sealed class ServiceLogWriter : IDisposable
 
         try
         {
-            var timestamp = DateTimeOffset.UtcNow;
             var text = $"... dropped {byteCount.ToString(CultureInfo.InvariantCulture)} bytes of output ...";
-            WriteLine(timestamp, "svchost", text);
+            AppendMarker(text);
+        }
+        catch
+        {
+            ResetWriter();
+        }
+    }
+
+    /// <summary>Writes an svchost marker line.</summary>
+    internal void AppendMarker(string text)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            WriteLine(DateTimeOffset.UtcNow, "svchost", text);
         }
         catch
         {

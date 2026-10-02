@@ -125,6 +125,37 @@ public sealed class ServiceLogWriterTests
     }
 
     [Fact]
+    public void AppendMarker_writes_lifecycle_markers_with_svchost_format()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var logDirectory = Path.Combine(root, "logs");
+            var notified = new List<string>();
+            using (var writer = new ServiceLogWriter(logDirectory, "worker"))
+            {
+                writer.LineWritten = notified.Add;
+                writer.AppendMarker("output stream attached (stdout)");
+                writer.AppendMarker("output stream ended: process-exited (stdout)");
+            }
+
+            var lines = File.ReadAllLines(Path.Combine(logDirectory, "worker.log"));
+            Assert.Equal(2, lines.Length);
+            Assert.Equal(lines, notified);
+            Assert.Matches(
+                @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[svchost\] output stream attached \(stdout\)$",
+                lines[0]);
+            Assert.Matches(
+                @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[svchost\] output stream ended: process-exited \(stdout\)$",
+                lines[1]);
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+    [Fact]
     public void Append_keeps_stdout_and_stderr_partial_lines_separate()
     {
         var root = CreateTempDirectory();
