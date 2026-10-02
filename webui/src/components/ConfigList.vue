@@ -3,6 +3,7 @@ import {
   NAlert,
   NButton,
   NIcon,
+  NModal,
   NPopconfirm,
   NSpin,
   NTable,
@@ -17,6 +18,7 @@ import { inject, onMounted, ref } from 'vue'
 import { ApiError, api, syncReportEntries } from '../api/client'
 import type { ConfigSummary } from '../api/types'
 import ConfigEditorDrawer from './ConfigEditorDrawer.vue'
+import SyncReportView from './SyncReportView.vue'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -26,6 +28,7 @@ const loading = ref(true)
 const configs = ref<ConfigSummary[]>([])
 const editing = ref<ConfigSummary | 'new' | null>(null)
 const syncingName = ref('')
+const viewingReport = ref<ConfigSummary | null>(null)
 
 async function load() {
   loading.value = true
@@ -103,6 +106,10 @@ function lastSyncOk(config: ConfigSummary): boolean | null {
   return config.lastSync ? config.lastSync.succeeded : null
 }
 
+function openReport(config: ConfigSummary) {
+  if (config.lastSync) viewingReport.value = config
+}
+
 onMounted(load)
 </script>
 
@@ -175,8 +182,20 @@ onMounted(load)
           <td>{{ config.services.map((s) => s.name).join(', ') || '—' }}</td>
           <td>{{ lockCount(config) }}</td>
           <td>
-            <n-tag v-if="lastSyncOk(config) === true" size="tiny" type="success" :bordered="false">ok</n-tag>
-            <n-tag v-else-if="lastSyncOk(config) === false" size="tiny" type="error" :bordered="false">failed</n-tag>
+            <n-button
+              v-if="lastSyncOk(config) !== null"
+              quaternary
+              size="tiny"
+              @click="openReport(config)"
+            >
+              <n-tag
+                size="tiny"
+                :type="lastSyncOk(config) ? 'success' : 'error'"
+                :bordered="false"
+              >
+                {{ lastSyncOk(config) ? 'ok' : 'failed' }}
+              </n-tag>
+            </n-button>
             <n-tag v-else size="tiny" :bordered="false">never</n-tag>
           </td>
           <td class="actions-col">
@@ -214,6 +233,16 @@ onMounted(load)
     </n-table>
 
     <ConfigEditorDrawer v-model:editing="editing" :on-saved="load" />
+    <n-modal
+      :show="viewingReport !== null"
+      preset="card"
+      :title="viewingReport ? `Sync report for ${viewingReport.name}` : 'Sync report'"
+      :style="{ width: '640px', maxWidth: 'calc(100vw - 32px)' }"
+      closable
+      @update:show="(show: boolean) => !show && (viewingReport = null)"
+    >
+      <SyncReportView v-if="viewingReport" :report="viewingReport.lastSync" />
+    </n-modal>
   </div>
 </template>
 

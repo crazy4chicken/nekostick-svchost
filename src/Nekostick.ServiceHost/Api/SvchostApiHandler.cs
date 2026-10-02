@@ -63,6 +63,13 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
     /// <summary>Releases the request lifetime cancellation source.</summary>
     public void Dispose() => _lifetimeCancellation.Dispose();
 
+    /// <summary>Records a reconciliation report produced outside an API request.</summary>
+    public void RecordReport(SyncReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        RememberReport(report);
+    }
+
     /// <inheritdoc />
     public async ValueTask<ExtensionStreamingResponse> HandleStreamingAsync(
         ExtensionStreamingRequest request,

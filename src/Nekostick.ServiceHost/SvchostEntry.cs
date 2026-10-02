@@ -357,7 +357,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
                     Array.Empty<Guid>(),
                     cancellationToken)
                 .ConfigureAwait(false);
-            ObserveSync(report);
+            RecordSyncReport(report);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -367,6 +367,23 @@ public sealed partial class SvchostEntry : IExtensionEntry
         {
             _bridge?.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "initial-sync-failed"));
         }
+    }
+
+    private void RecordSyncReport(SyncReport report)
+    {
+        SvchostApiHandler? apiHandler;
+        lock (_lifecycleGate)
+        {
+            apiHandler = _apiHandler;
+        }
+
+        if (apiHandler is null)
+        {
+            ObserveSync(report);
+            return;
+        }
+
+        apiHandler.RecordReport(report);
     }
 
     private static TaskCompletionSource<bool> CreateCompletedSource()

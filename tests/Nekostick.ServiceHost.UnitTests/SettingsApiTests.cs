@@ -62,6 +62,53 @@ public sealed class SettingsApiTests
     }
 
     [Fact]
+    public async Task Record_report_updates_config_last_sync_with_failure_details()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
+        {
+            settings.Configs["demo"] = new SvchostConfigSettings("services: {}");
+            return settings;
+        });
+        Assert.True(setup.IsSuccess);
+
+        const string error = "The source could not be resolved.";
+        var report = new SyncReport(
+            false,
+            true,
+            DateTimeOffset.UtcNow,
+            ImmutableArray.Create(new ServiceSyncReport(
+                "demo",
+                "api",
+                false,
+                false,
+                null,
+                ImmutableArray<Guid>.Empty,
+                error,
+                SyncErrorCode.SourceFailed)),
+            null,
+            error)
+        {
+            FailureCode = SyncErrorCode.SourceFailed
+        };
+        fixture.Handler.RecordReport(report);
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("GET", string.Empty, requestPath: "/svchost/api/configs"),
+            CancellationToken.None);
+
+        Assert.Equal(200, response.StatusCode);
+        using var document = await ReadJsonAsync(response);
+        var config = Assert.Single(
+            document.RootElement.EnumerateArray(),
+            item => item.GetProperty("name").GetString() == "demo");
+        var lastSync = config.GetProperty("lastSync");
+        Assert.False(lastSync.GetProperty("succeeded").GetBoolean());
+        Assert.Equal(error, lastSync.GetProperty("error").GetString());
+        Assert.Equal("source", lastSync.GetProperty("errorKind").GetString());
+    }
+
+    [Fact]
     public async Task Put_rejects_reserved_global_config_name()
     {
         using var fixture = await CreateFixtureAsync();

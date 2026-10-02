@@ -159,7 +159,7 @@ public sealed partial class SvchostEntry
                     Array.Empty<Guid>(),
                     debounceCancellation.Token)
                 .ConfigureAwait(false);
-            ObserveSync(report);
+            RecordSyncReport(report);
         }
         catch (OperationCanceledException) when (debounceCancellation.IsCancellationRequested)
         {
