@@ -601,26 +601,20 @@ export async function attachComposeSupport(monaco: MonacoApi, editor: MonacoEdit
     })
   }
 
-  let timer: number | null = null
+  let timer = 0
   const runValidation = () => {
     monaco.editor.setModelMarkers(model, MARKER_OWNER, validateDocument(monaco, model, yaml, model.getValue()))
   }
-  editor.onDidChangeModelContent((event) => {
-    if (timer !== null) {
-      clearTimeout(timer)
-    }
+  editor.onDidChangeModelContent(() => {
+    clearTimeout(timer)
     timer = window.setTimeout(runValidation, 300)
 
-    // After Enter lands on a fresh (whitespace-only) line, offer the keys
-    // valid at that indentation immediately.
-    if (event.changes.some((change) => change.text.includes('\n'))) {
-      window.setTimeout(() => {
-        const cursor = editor.getPosition()
-        if (cursor && model.getLineContent(cursor.lineNumber).trim() === '') {
-          editor.trigger('svchost.newline', 'editor.action.triggerSuggest')
-        }
-      }, 50)
-    }
+    // Offer completions after every edit — including accepted suggestions, whose
+    // insertion is itself a content change — instead of relying on trigger
+    // characters alone. Empty suggestion lists keep the widget hidden.
+    window.setTimeout(() => {
+      editor.trigger('svchost.edit', 'editor.action.triggerSuggest')
+    }, 10)
   })
   runValidation()
 }
