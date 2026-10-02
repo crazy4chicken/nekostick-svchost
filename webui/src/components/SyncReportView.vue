@@ -11,6 +11,13 @@ const vars = useThemeVars()
 
 <template>
   <div v-if="report">
+    <n-text
+      v-if="report.succeeded === false && report.error"
+      class="reason run-error"
+      :style="{ color: vars.errorColor }"
+    >
+      {{ report.errorKind ? `${report.errorKind}: ` : '' }}{{ report.error }}
+    </n-text>
     <n-list v-if="syncReportEntries(report).length" size="small" bordered>
       <n-list-item v-for="result in syncReportEntries(report)" :key="result.name">
         <div class="service-result">
@@ -42,7 +49,7 @@ const vars = useThemeVars()
         </div>
       </n-list-item>
     </n-list>
-    <n-text v-else depth="3">No services in this configuration.</n-text>
+    <n-text v-else-if="report.succeeded || !report.error" depth="3">No services in this configuration.</n-text>
   </div>
   <n-text v-else depth="3">No sync has run yet.</n-text>
 </template>
@@ -58,6 +65,10 @@ const vars = useThemeVars()
 }
 .reason {
   font-size: 12px;
+}
+.run-error {
+  display: block;
+  margin-bottom: 8px;
 }
 .service-result {
   width: 100%;

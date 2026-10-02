@@ -33,6 +33,7 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
     private readonly SemaphoreSlim _mutationGate = new(1, 1);
     private readonly object _reportGate = new();
     private readonly Dictionary<string, SyncReport> _lastReports = new(StringComparer.Ordinal);
+    private SyncReport? _lastRunFailure;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
 
     public SvchostApiHandler(
@@ -212,13 +213,27 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
             }
         }
 
+        if (!report.Succeeded && report.Error is not null)
+        {
+            lock (_reportGate)
+            {
+                _lastRunFailure = report;
+            }
+        }
+
         _syncObserver?.Invoke(report);
     }
-    private SyncReport? GetLastReport(string configName)
+    private SyncReport? GetEffectiveReport(string configName)
     {
         lock (_reportGate)
         {
-            return _lastReports.TryGetValue(configName, out var report) ? report : null;
+            if (_lastReports.TryGetValue(configName, out var configReport) &&
+                (_lastRunFailure is null || configReport.CompletedAt >= _lastRunFailure.CompletedAt))
+            {
+                return configReport;
+            }
+
+            return _lastRunFailure;
         }
     }
 

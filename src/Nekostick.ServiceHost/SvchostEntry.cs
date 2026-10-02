@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Nekolla.Nekostick.Contracts;
 using Nekostick.ServiceHost.Api;
 using Nekostick.ServiceHost.Compose;
@@ -363,9 +364,26 @@ public sealed partial class SvchostEntry : IExtensionEntry
         {
             // The Host task scheduler cancels this callback during extension stop.
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            _bridge?.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "initial-sync-failed"));
+            IExtensionHostBridge13? bridge;
+            lock (_lifecycleGate)
+            {
+                bridge = _bridge;
+            }
+
+            var report = new SyncReport(
+                false,
+                !string.IsNullOrWhiteSpace(bridge?.DataDirectory),
+                DateTimeOffset.UtcNow,
+                ImmutableArray<ServiceSyncReport>.Empty,
+                null,
+                exception.Message)
+            {
+                FailureCode = SyncErrorCode.ReconcileFailed
+            };
+            RecordSyncReport(report);
+            bridge?.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "initial-sync-failed"));
         }
     }
 

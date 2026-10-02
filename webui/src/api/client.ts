@@ -147,6 +147,7 @@ export function normalizeSyncReport(raw: unknown): SyncReport {
     succeeded: rec.succeeded === undefined ? services.every((s) => s.succeeded) : Boolean(rec.succeeded),
     services,
     error: rec.error == null ? undefined : String(rec.error),
+    errorKind: rec.errorKind == null ? undefined : String(rec.errorKind),
   }
 }
 

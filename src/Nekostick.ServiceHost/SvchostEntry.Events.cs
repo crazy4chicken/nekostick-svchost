@@ -1,5 +1,7 @@
+using System.Collections.Immutable;
 using Nekolla.Nekostick.Contracts;
 using Nekostick.ServiceHost.Settings;
+using Nekostick.ServiceHost.Sync;
 
 namespace Nekostick.ServiceHost;
 
@@ -165,7 +167,7 @@ public sealed partial class SvchostEntry
         {
             // A newer event or extension stop superseded this debounce window.
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             IExtensionHostBridge13? bridge;
             lock (_lifecycleGate)
@@ -173,6 +175,17 @@ public sealed partial class SvchostEntry
                 bridge = _bridge;
             }
 
+            var report = new SyncReport(
+                false,
+                !string.IsNullOrWhiteSpace(bridge?.DataDirectory),
+                DateTimeOffset.UtcNow,
+                ImmutableArray<ServiceSyncReport>.Empty,
+                null,
+                exception.Message)
+            {
+                FailureCode = SyncErrorCode.ReconcileFailed
+            };
+            RecordSyncReport(report);
             bridge?.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "settings-sync-failed"));
         }
         finally

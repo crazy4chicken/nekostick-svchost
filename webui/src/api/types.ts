@@ -62,6 +62,7 @@ export interface SyncReport {
   succeeded: boolean
   services: ServiceSyncResult[]
   error?: string
+  errorKind?: string
 }
 
 export interface ActionResponse {

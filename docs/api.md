@@ -22,7 +22,7 @@
 
 `DELETE /svchost/api/configs/{name}` 按该配置可解析出的 `serviceScope` 清理数据: `document` 删除整个 `<data>/svchost/{name}` service root; `global` 只删除该配置对应的 `<data>/svchost/global/artifacts/<serviceName>` 目录, 服务名取可解析 YAML 的声明与 lock 条目的并集, 并保留仍由其他 global 配置声明或锁定的名称. 若该配置 YAML 无法解析, scope 默认按 `global` 处理, 此时可用服务名来自 lock.
 
-配置列表和详情的 `lastSync` 仅保存在当前 API handler 的内存中, 并在每次 reconcile 完成时更新, 包括 API 触发、启动和事件驱动的 reconcile. 扩展重启后 `lastSync` 为 `null`; 若某次 report 中不含某配置, 该配置的缓存不会更新.
+配置列表和详情的 `lastSync` 仅保存在当前 API handler 的内存中, 并在每次 reconcile 完成时更新, 包括 API 触发、启动和事件驱动的 reconcile. 运行级失败（包括 reconciler exception）也会被记录; 对于配置级报告缺失或早于该运行级失败的配置, `lastSync` 会显示运行级失败, 否则显示较新的配置级报告. 扩展重启后 `lastSync` 为 `null`; 配置级报告仅在 report.Services 含该配置时更新.
 
 配置 YAML 的字段与校验规则见 [Compose 配置参考](compose.md).
 

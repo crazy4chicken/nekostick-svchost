@@ -38,7 +38,7 @@ public sealed partial class SvchostApiHandler
                         },
                     strictSources = compose?.StrictSources,
                     @lock = LockSummary(pair.Value),
-                    lastSync = GetLastReport(pair.Key) is { } report
+                    lastSync = GetEffectiveReport(pair.Key) is { } report
                         ? SyncReportPayload(report, pair.Key)
                         : null
                 };
@@ -80,7 +80,7 @@ public sealed partial class SvchostApiHandler
                     name,
                     yaml = config.Yaml,
                     @lock = config.Lock,
-                    lastSync = GetLastReport(name) is { } report
+                    lastSync = GetEffectiveReport(name) is { } report
                         ? SyncReportPayload(report, name)
                         : null
                 });
