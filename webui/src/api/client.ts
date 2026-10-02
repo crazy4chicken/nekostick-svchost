@@ -3,6 +3,7 @@ import type {
   ConfigDetail,
   ConfigSummary,
   ErrorBody,
+  LogPage,
   ManagedService,
   ServiceDeclSummary,
   ServiceSyncResult,
@@ -248,4 +249,86 @@ export const api = {
         asynchronous: Boolean(rec.asynchronous),
       }
     }),
+  listLogPage: (config: string, service: string, file: number) =>
+    request<LogPage>(
+      'GET',
+      `/configs/${encodeURIComponent(config)}/services/${encodeURIComponent(service)}/logs?file=${encodeURIComponent(String(file))}`,
+    ),
+
+  streamLogTail: async (
+    config: string,
+    service: string,
+    fromLine: number,
+    onLine: (line: string) => void,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const headers: Record<string, string> = { Accept: 'text/event-stream' }
+    const key = getStoredKey()
+    if (key) headers['X-Api-Key'] = key
+
+    const query = encodeURIComponent(String(fromLine))
+    const res = await fetch(
+      `${BASE}/configs/${encodeURIComponent(config)}/services/${encodeURIComponent(service)}/logs/tail?fromLine=${query}`,
+      { headers, signal },
+    )
+
+    if (!res.ok) {
+      let code = 'Error'
+      let message = `Request failed (HTTP ${res.status}).`
+      try {
+        const parsed = (await res.json()) as ErrorBody
+        code = parsed.error?.code ?? code
+        message = parsed.error?.message ?? message
+      } catch {
+        // non-JSON error body; keep the defaults
+      }
+      throw new ApiError(code, message, res.status)
+    }
+
+    if (!res.body) throw new Error('Log stream response has no body.')
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let ended = false
+
+    const consumeLine = (line: string) => {
+      if (!line || line.startsWith(':') || !line.startsWith('data:')) return
+      const payload = line.slice(5).replace(/^ /, '')
+      const event = JSON.parse(payload) as { line?: unknown } | null
+      if (typeof event?.line !== 'string') throw new Error('Invalid log stream event payload.')
+      onLine(event.line)
+    }
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) {
+          ended = true
+          buffer += decoder.decode()
+          break
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        let newline = buffer.indexOf('\n')
+        while (newline >= 0) {
+          consumeLine(buffer.slice(0, newline).replace(/\r$/, ''))
+          buffer = buffer.slice(newline + 1)
+          newline = buffer.indexOf('\n')
+        }
+      }
+
+      if (buffer) consumeLine(buffer.replace(/\r$/, ''))
+    } finally {
+      if (!ended) {
+        try {
+          await reader.cancel()
+        } catch {
+          // The stream may already have errored or been aborted.
+        }
+      }
+      reader.releaseLock()
+    }
+  },
+
 }

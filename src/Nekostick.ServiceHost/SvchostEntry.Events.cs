@@ -20,6 +20,7 @@ public sealed partial class SvchostEntry
         SettingsStore? settingsStore;
         ApiKeyService? apiKeyService;
         IExtensionHostBridge13? bridge;
+        ResetDriftForcedReconcileBackoff();
         lock (_lifecycleGate)
         {
             bridge = _bridge;
@@ -162,6 +163,10 @@ public sealed partial class SvchostEntry
                     debounceCancellation.Token)
                 .ConfigureAwait(false);
             RecordSyncReport(report);
+            if (force)
+            {
+                RecordDriftForcedReconcile(report);
+            }
         }
         catch (OperationCanceledException) when (debounceCancellation.IsCancellationRequested)
         {
@@ -186,6 +191,10 @@ public sealed partial class SvchostEntry
                 FailureCode = SyncErrorCode.ReconcileFailed
             };
             RecordSyncReport(report);
+            if (force)
+            {
+                RecordDriftForcedReconcile(report);
+            }
             bridge?.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "settings-sync-failed"));
         }
         finally
@@ -214,11 +223,18 @@ public sealed partial class SvchostEntry
             return;
         }
 
+        RecordObservedHostConfigurationVersion(bridge, hostInfo.PublishedConfigurationVersion);
+    }
+
+    private void RecordObservedHostConfigurationVersion(
+        IExtensionHostBridge13 bridge,
+        long? publishedConfigurationVersion)
+    {
         lock (_lifecycleGate)
         {
             if (ReferenceEquals(_bridge, bridge))
             {
-                _lastObservedPublishedConfigurationVersion = hostInfo.PublishedConfigurationVersion;
+                _lastObservedPublishedConfigurationVersion = publishedConfigurationVersion;
             }
         }
     }
@@ -276,7 +292,7 @@ public sealed partial class SvchostEntry
         long? lastPublishedVersion;
         long? lastConsumedSettingsVersion;
         bool reconcileUnsettled;
-        bool unsettledRetryDue;
+        bool driftForcedRetryDue;
         lock (_lifecycleGate)
         {
             bridge = _bridge;
@@ -284,19 +300,18 @@ public sealed partial class SvchostEntry
             lastPublishedVersion = _lastObservedPublishedConfigurationVersion;
             lastConsumedSettingsVersion = _lastReconcilerConsumedSettingsVersion;
             reconcileUnsettled = _reconcileUnsettled;
-            if (reconcileUnsettled)
+            if (_consecutiveDriftForcedReconcileCount == 0)
             {
-                _unsettledDriftTickCount++;
-                unsettledRetryDue = _unsettledDriftTickCount >= UnsettledDriftRetryIntervalTicks;
-                if (unsettledRetryDue)
-                {
-                    _unsettledDriftTickCount = 0;
-                }
+                _driftForcedRetryTickCount = 0;
+                driftForcedRetryDue = true;
             }
             else
             {
-                _unsettledDriftTickCount = 0;
-                unsettledRetryDue = false;
+                _driftForcedRetryTickCount = Math.Min(
+                    _driftForcedRetryTickCount + 1,
+                    DriftForcedRetryMaximumIntervalTicks);
+                driftForcedRetryDue = _driftForcedRetryTickCount >=
+                    GetDriftForcedRetryIntervalTicks(_consecutiveDriftForcedReconcileCount);
             }
         }
 
@@ -321,7 +336,7 @@ public sealed partial class SvchostEntry
         {
             bridge.Logger.Report(ExtensionLogLevel.Warning, "configuration-drift-settings-read-failed");
             if ((hostVersionMismatch || reconcileUnsettled) &&
-                (!reconcileUnsettled || unsettledRetryDue) &&
+                driftForcedRetryDue &&
                 !IsReconcileInFlight())
             {
                 ScheduleDebouncedReconcile(
@@ -336,7 +351,7 @@ public sealed partial class SvchostEntry
         var settingsVersionMismatch = !lastConsumedSettingsVersion.HasValue ||
             settingsRead.Value.Version != lastConsumedSettingsVersion.Value;
         if ((!hostVersionMismatch && !settingsVersionMismatch && !reconcileUnsettled) ||
-            (reconcileUnsettled && !unsettledRetryDue) ||
+            !driftForcedRetryDue ||
             IsReconcileInFlight())
         {
             return;

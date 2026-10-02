@@ -26,4 +26,10 @@ public sealed record ServiceSyncReport(
     /// node-local degradation from a global removal.
     /// </summary>
     public bool NodeLocal { get; init; }
+
+    /// <summary>
+    /// Gets the directory where this service's output logs are stored. This additive
+    /// field is included in sync report payloads without changing existing fields.
+    /// </summary>
+    public string? LogDirectory { get; init; }
 }

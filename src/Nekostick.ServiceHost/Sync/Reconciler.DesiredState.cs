@@ -260,6 +260,7 @@ public sealed partial class Reconciler
             }
 
             var config = work.Config!;
+            var logDirectory = Path.Combine(work.ServiceRootDirectory!, "logs");
             var serviceIds = work.Services
                 .Where(state => state.ServiceId is not null)
                 .ToDictionary(state => state.ServiceName, state => state.ServiceId!.Value, StringComparer.Ordinal);
@@ -305,7 +306,8 @@ public sealed partial class Reconciler
                         SyncErrorCode.SourceFailed)
                     {
                         Warnings = composeService.Warnings.AddRange(resolved.Warnings),
-                        NodeLocal = failedServiceId != Guid.Empty
+                        NodeLocal = failedServiceId != Guid.Empty,
+                        LogDirectory = logDirectory
                     });
                     continue;
                 }
@@ -348,7 +350,8 @@ public sealed partial class Reconciler
                         $"The template target service '{exception.Target}' could not be resolved.",
                         SyncErrorCode.ReconcileFailed)
                     {
-                        Warnings = composeService.Warnings.AddRange(resolved.Warnings)
+                        Warnings = composeService.Warnings.AddRange(resolved.Warnings),
+                        LogDirectory = logDirectory
                     });
                     continue;
                 }
@@ -405,7 +408,8 @@ public sealed partial class Reconciler
                     routeIds.ToImmutableArray(),
                     null)
                 {
-                    Warnings = composeService.Warnings.AddRange(resolved.Warnings)
+                    Warnings = composeService.Warnings.AddRange(resolved.Warnings),
+                    LogDirectory = logDirectory
                 });
             }
         }

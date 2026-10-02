@@ -13,11 +13,12 @@ import {
   useDialog,
   useMessage,
 } from 'naive-ui'
-import { AddOutline, CreateOutline, SyncOutline, TrashOutline } from '@vicons/ionicons5'
+import { AddOutline, CreateOutline, DocumentTextOutline, SyncOutline, TrashOutline } from '@vicons/ionicons5'
 import { inject, onMounted, ref } from 'vue'
 import { ApiError, api, syncReportEntries } from '../api/client'
 import type { ConfigSummary } from '../api/types'
 import ConfigEditorDrawer from './ConfigEditorDrawer.vue'
+import LogViewerModal from './LogViewerModal.vue'
 import SyncReportView from './SyncReportView.vue'
 
 const message = useMessage()
@@ -29,6 +30,7 @@ const configs = ref<ConfigSummary[]>([])
 const editing = ref<ConfigSummary | 'new' | null>(null)
 const syncingName = ref('')
 const viewingReport = ref<ConfigSummary | null>(null)
+const viewingLogs = ref<ConfigSummary | null>(null)
 
 async function load() {
   loading.value = true
@@ -108,6 +110,10 @@ function lastSyncOk(config: ConfigSummary): boolean | null {
 
 function openReport(config: ConfigSummary) {
   if (config.lastSync) viewingReport.value = config
+}
+
+function openLogs(config: ConfigSummary) {
+  viewingLogs.value = config
 }
 
 onMounted(load)
@@ -199,6 +205,10 @@ onMounted(load)
             <n-tag v-else size="tiny" :bordered="false">never</n-tag>
           </td>
           <td class="actions-col">
+            <n-button size="tiny" quaternary @click="openLogs(config)">
+              <template #icon><n-icon><DocumentTextOutline /></n-icon></template>
+              Logs
+            </n-button>
             <n-button size="tiny" quaternary @click="openEdit(config)">
               <template #icon><n-icon><CreateOutline /></n-icon></template>
               Edit
@@ -233,6 +243,7 @@ onMounted(load)
     </n-table>
 
     <ConfigEditorDrawer v-model:editing="editing" :on-saved="load" />
+    <LogViewerModal v-model:config="viewingLogs" />
     <n-modal
       :show="viewingReport !== null"
       preset="card"

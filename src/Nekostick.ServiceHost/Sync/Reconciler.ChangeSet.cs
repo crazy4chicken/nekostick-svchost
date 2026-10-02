@@ -83,8 +83,7 @@ public sealed partial class Reconciler
 
     private static ServiceConfiguration PreserveServiceVersion(
         ServiceConfiguration desired,
-        HostConfigurationSnapshot snapshot,
-        bool forceUpdate)
+        HostConfigurationSnapshot snapshot)
     {
         var existing = snapshot.Services.FirstOrDefault(service => service.Id == desired.Id);
         if (existing is null)
@@ -105,7 +104,7 @@ public sealed partial class Reconciler
             existing.CreatedAt,
             DateTimeOffset.UtcNow,
             existing.Version);
-        return !forceUpdate && SemanticallyEqualIgnoringVersion(preserved, existing) ? existing : preserved;
+        return SemanticallyEqualIgnoringVersion(preserved, existing) ? existing : preserved;
     }
 
     private static RouteConfiguration PreserveRouteVersion(

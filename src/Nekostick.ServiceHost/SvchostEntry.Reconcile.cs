@@ -1,4 +1,5 @@
 using Nekolla.Nekostick.Contracts;
+using Nekostick.ServiceHost.Logs;
 using Nekostick.ServiceHost.Settings;
 using Nekostick.ServiceHost.Sync;
 
@@ -45,7 +46,19 @@ public sealed partial class SvchostEntry
 
             if (bridge is not null)
             {
-                ObserveHostConfigurationVersion(bridge);
+                if (report.WrittenConfigurationVersion is { } writtenVersion)
+                {
+                    RecordObservedHostConfigurationVersion(bridge, writtenVersion);
+                }
+                else
+                {
+                    ObserveHostConfigurationVersion(bridge);
+                }
+            }
+
+            if (!report.HasFailures && !report.WrittenConfigurationVersion.HasValue)
+            {
+                ResetDriftForcedReconcileBackoff();
             }
 
             return report;
@@ -82,12 +95,12 @@ public sealed partial class SvchostEntry
                 if (settled)
                 {
                     _reconcileUnsettled = false;
-                    _unsettledDriftTickCount = 0;
+                    _driftForcedRetryTickCount = 0;
                 }
                 else if (consumedSettingsVersion.HasValue)
                 {
                     _reconcileUnsettled = true;
-                    _unsettledDriftTickCount = 0;
+                    _driftForcedRetryTickCount = 0;
                 }
             }
         }
@@ -102,9 +115,51 @@ public sealed partial class SvchostEntry
             if (_bridge is not null)
             {
                 _reconcileUnsettled = true;
-                _unsettledDriftTickCount = 0;
+                _driftForcedRetryTickCount = 0;
             }
         }
+    }
+
+    private void ResetDriftForcedReconcileBackoff()
+    {
+        lock (_lifecycleGate)
+        {
+            _consecutiveDriftForcedReconcileCount = 0;
+            _driftForcedRetryTickCount = 0;
+        }
+    }
+
+    private void RecordDriftForcedReconcile(SyncReport report)
+    {
+        lock (_lifecycleGate)
+        {
+            if (!report.HasFailures && !report.WrittenConfigurationVersion.HasValue)
+            {
+                _consecutiveDriftForcedReconcileCount = 0;
+                _driftForcedRetryTickCount = 0;
+                return;
+            }
+
+            _consecutiveDriftForcedReconcileCount = Math.Min(
+                _consecutiveDriftForcedReconcileCount + 1,
+                DriftForcedRetryMaximumIntervalTicks);
+            _driftForcedRetryTickCount = 0;
+        }
+    }
+
+    private static int GetDriftForcedRetryIntervalTicks(int consecutiveReconcileCount)
+    {
+        var retryIntervalTicks = DriftForcedRetryBaseIntervalTicks;
+        for (var retry = 1;
+             retry < consecutiveReconcileCount && retryIntervalTicks < DriftForcedRetryMaximumIntervalTicks;
+             retry++)
+        {
+            retryIntervalTicks = Math.Min(
+                retryIntervalTicks * 2,
+                DriftForcedRetryMaximumIntervalTicks);
+        }
+
+        return retryIntervalTicks;
     }
 
     private void ReconcileStarted()
@@ -160,10 +215,12 @@ public sealed partial class SvchostEntry
     {
         IExtensionHostBridge13? bridge;
         bool startupDegraded;
+        ServiceLogRecorder? logRecorder;
         lock (_lifecycleGate)
         {
             bridge = _bridge;
             startupDegraded = _startupDegraded;
+            logRecorder = _logRecorder;
         }
 
         if (bridge is null)
@@ -176,5 +233,20 @@ public sealed partial class SvchostEntry
             new ExtensionStatus(
                 healthy ? ExtensionStatusKind.Healthy : ExtensionStatusKind.Degraded,
                 healthy ? "sync-healthy" : "sync-failed"));
+        if (!report.Succeeded && report.Services.IsEmpty)
+        {
+            return;
+        }
+
+        var targets = new List<ServiceLogTarget>();
+        foreach (var service in report.Services)
+        {
+            if (service.ServiceId is { } id && service.LogDirectory is { } dir)
+            {
+                targets.Add(new ServiceLogTarget(id, service.ServiceName, dir));
+            }
+        }
+
+        logRecorder?.SyncTargets(targets);
     }
 }

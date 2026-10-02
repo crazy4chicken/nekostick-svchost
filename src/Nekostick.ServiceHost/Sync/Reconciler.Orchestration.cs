@@ -78,13 +78,9 @@ public sealed partial class Reconciler
             .Where(item => item.Route is not null)
             .Select(item => item.Route!)
             .ToImmutableArray();
-        var refreshedServiceIds = desiredState.Desired
-            .Where(item => !item.SourceReused)
-            .Select(item => item.Service.Id)
-            .ToHashSet();
-        var sourceChanged = refreshedServiceIds.Count > 0;
         var replaceCompleted = false;
         var replaceSucceeded = false;
+        long? writtenConfigurationVersion = null;
         var orphanNotes = ImmutableArray<string>.Empty;
         for (var attempt = 0; attempt < MaxReplaceAttempts; attempt++)
         {
@@ -101,7 +97,8 @@ public sealed partial class Reconciler
                 {
                     FailureCode = SyncErrorCode.ReconcileFailed,
                     ConsumedSettingsVersion = consumedSettingsVersion,
-                    Notes = orphanNotes
+                    Notes = orphanNotes,
+                    WrittenConfigurationVersion = writtenConfigurationVersion
                 };
             }
 
@@ -141,14 +138,12 @@ public sealed partial class Reconciler
                 desiredState.ManagedRouteIds,
                 desiredServices.Select(service => PreserveServiceVersion(
                     service,
-                    snapshot,
-                    refreshedServiceIds.Contains(service.Id))),
+                    snapshot)),
                 desiredRoutes.Select(route => PreserveRouteVersion(route, snapshot)),
                 preservedSourceServiceIds,
                 preservedSourceRouteIds,
                 desiredState.ConfiguredLockServiceIds);
-            if (!sourceChanged &&
-                SemanticallyEqualIgnoringVersion(snapshot.Services, changes.Services) &&
+            if (SemanticallyEqualIgnoringVersion(snapshot.Services, changes.Services) &&
                 SemanticallyEqualIgnoringVersion(snapshot.Routes, changes.Routes))
             {
                 replaceCompleted = true;
@@ -171,7 +166,8 @@ public sealed partial class Reconciler
                 {
                     FailureCode = SyncErrorCode.ReconcileFailed,
                     ConsumedSettingsVersion = consumedSettingsVersion,
-                    Notes = orphanNotes
+                    Notes = orphanNotes,
+                    WrittenConfigurationVersion = writtenConfigurationVersion
                 };
             }
 
@@ -187,7 +183,8 @@ public sealed partial class Reconciler
                 {
                     FailureCode = SyncErrorCode.ReconcileFailed,
                     ConsumedSettingsVersion = consumedSettingsVersion,
-                    Notes = orphanNotes
+                    Notes = orphanNotes,
+                    WrittenConfigurationVersion = writtenConfigurationVersion
                 };
             }
 
@@ -196,6 +193,10 @@ public sealed partial class Reconciler
                     changes,
                     cancellationToken)
                 .ConfigureAwait(false);
+            if (replaceResult.NewVersion is { } newVersion)
+            {
+                writtenConfigurationVersion = newVersion;
+            }
             if (replaceResult.IsSuccess)
             {
                 replaceCompleted = true;
@@ -216,7 +217,8 @@ public sealed partial class Reconciler
                 {
                     FailureCode = SyncErrorCode.ReconcileFailed,
                     ConsumedSettingsVersion = consumedSettingsVersion,
-                    Notes = orphanNotes
+                    Notes = orphanNotes,
+                    WrittenConfigurationVersion = writtenConfigurationVersion
                 };
             }
         }
@@ -233,7 +235,8 @@ public sealed partial class Reconciler
             {
                 FailureCode = SyncErrorCode.ReconcileFailed,
                 ConsumedSettingsVersion = consumedSettingsVersion,
-                Notes = orphanNotes
+                Notes = orphanNotes,
+                WrittenConfigurationVersion = writtenConfigurationVersion
             };
         }
 
@@ -259,7 +262,7 @@ public sealed partial class Reconciler
             .ConfigureAwait(false);
         if (lockFailure is not null)
         {
-            return lockFailure;
+            return lockFailure with { WrittenConfigurationVersion = writtenConfigurationVersion };
         }
 
         var allServicesSucceeded = reports.All(report => report.Succeeded);
@@ -272,7 +275,8 @@ public sealed partial class Reconciler
             null)
         {
             ConsumedSettingsVersion = consumedSettingsVersion,
-            Notes = orphanNotes
+            Notes = orphanNotes,
+            WrittenConfigurationVersion = writtenConfigurationVersion
         };
     }
 

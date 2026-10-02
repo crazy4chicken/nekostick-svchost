@@ -9,3 +9,5 @@
 - Read-only 实例跳过 API/WebUI 注册与全部 reconciles, 不会执行启动、后台或 API 触发的同步.
 - `serviceScope: global` (默认) 的配置在每个节点共享 `<data>/svchost/global`. reconcile 按配置名 ordinal 顺序扫描 global 配置, 首个声明某服务名的配置占用该名称; YAML 无法解析的配置不占用名称. 后续 global 配置若重复声明任一已占用名称, 整份配置中所有服务均报告失败, 且其其他非冲突服务名也不会被注册; `document` 配置不参与全局去重.
 - global 服务名冲突会阻断整轮 reconcile: 不会替换 Host 配置、持久化 lock 或调用 `ResumeAsync`, 所以占用名称的配置及无关配置 (包括 `document`) 均不会生效. 其他配置的来源仍可能已解析, 个别服务报告可能显示成功, 但不表示服务已上线; 冲突存在期间后续 reconcile 仍会被阻断.
+Managed service stdout and stderr are recorded under `<data directory>/svchost/<config|global>/logs/<service>.log`, with rotation at 1,000 lines per file and five files retained. This is enabled only when the host provides the API 1.4 service-output capability; otherwise it is silently disabled.
+

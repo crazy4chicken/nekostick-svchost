@@ -1,3 +1,4 @@
+using System.Reflection;
 using Nekolla.Nekostick.Contracts;
 
 namespace Nekostick.ServiceHost.UnitTests;
@@ -164,5 +165,34 @@ internal sealed class FakeFullConfigurationApi : IExtensionFullConfigurationApi
             changes.ExtensionRecords,
             changes.ExtensionSettings);
         return ValueTask.FromResult(ConfigurationWriteResult.Success(expectedVersion + 1));
+    }
+}
+
+public class CountingSupervisorProxy : DispatchProxy
+{
+    public int ReadCallCount { get; private set; }
+
+    public int ResumeCallCount { get; private set; }
+
+    internal static IExtensionSupervisorApi Create(out CountingSupervisorProxy fake)
+    {
+        var supervisor = DispatchProxy.Create<IExtensionSupervisorApi, CountingSupervisorProxy>();
+        fake = (CountingSupervisorProxy)(object)supervisor;
+        return supervisor;
+    }
+
+    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+    {
+        switch (targetMethod?.Name)
+        {
+            case nameof(IExtensionSupervisorApi.ReadAsync):
+                ReadCallCount++;
+                break;
+            case nameof(IExtensionSupervisorApi.ResumeAsync):
+                ResumeCallCount++;
+                break;
+        }
+
+        throw new NotSupportedException($"Unexpected supervisor call: {targetMethod?.Name}.");
     }
 }

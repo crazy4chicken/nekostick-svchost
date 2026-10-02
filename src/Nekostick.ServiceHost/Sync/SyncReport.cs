@@ -18,6 +18,9 @@ public sealed record SyncReport(
     /// <summary>Gets the settings version consumed at the start of reconciliation, when available.</summary>
     public long? ConsumedSettingsVersion { get; init; }
 
+    /// <summary>Gets the host configuration version committed by this run's final ReplaceAsync, or null when the run performed no configuration write.</summary>
+    public long? WrittenConfigurationVersion { get; init; }
+
     /// <summary>Gets a domain-specific reconciliation error, when applicable.</summary>
     public SyncErrorCode? FailureCode { get; init; }
 

@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using Nekolla.Nekostick.Contracts;
 using Nekostick.ServiceHost.Api;
 using Nekostick.ServiceHost.Compose;
+using Nekostick.ServiceHost.Logs;
 using Nekostick.ServiceHost.Settings;
 using Nekostick.ServiceHost.Sync;
 using Nekostick.ServiceHost.Sync.Releases;
@@ -14,7 +15,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
 {
     private static readonly Task CompletedTask = Task.CompletedTask;
     private static readonly HostApiVersion MinimumHostApiVersion = new(1, 3, 3);
-    private const int UnsettledDriftRetryIntervalTicks = 4;
+    private const int DriftForcedRetryBaseIntervalTicks = 1;
+    private const int DriftForcedRetryMaximumIntervalTicks = 16;
     private static readonly TimeSpan DriftCheckInterval = TimeSpan.FromSeconds(60);
     private readonly object _lifecycleGate = new();
     private readonly object _debounceGate = new();
@@ -26,6 +28,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
     private ApiKeyService? _apiKeyService;
     private Reconciler? _reconciler;
     private SvchostApiHandler? _apiHandler;
+    private ServiceLogRecorder? _logRecorder;
     private CancellationTokenSource? _lifetimeCancellation;
     private CancellationTokenSource? _debounceCancellation;
     private PeriodicTimer? _driftTimer;
@@ -34,7 +37,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
     private long? _lastReconcilerConsumedSettingsVersion;
     private long? _lastObservedPublishedConfigurationVersion;
     private bool _reconcileUnsettled;
-    private int _unsettledDriftTickCount;
+    private int _driftForcedRetryTickCount;
+    private int _consecutiveDriftForcedReconcileCount;
     private bool _startupDegraded;
     private TaskCompletionSource<bool> _reconcileIdle = CreateCompletedSource();
     private int _activeReconciles;
@@ -67,6 +71,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
             return;
         }
 
+        var outputApi = (bridge as IExtensionHostBridge14)?.ServiceOutput;
         if (!bridge.HostInfo.ReadOnly)
         {
             LegacySettingsMigrationResult migrationResult;
@@ -115,9 +120,11 @@ public sealed partial class SvchostEntry : IExtensionEntry
             bridge.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "settings-initialization-failed"));
             return;
         }
+        var logRecorder = new ServiceLogRecorder(outputApi, bridge.Logger);
         lock (_lifecycleGate)
         {
             _bridge = bridge;
+            _logRecorder = logRecorder;
             _registration = context.Registration;
             _settingsStore = settingsStore;
             _apiKeyService = apiKeyService;
@@ -129,7 +136,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
             _lastReconcilerConsumedSettingsVersion = null;
             _lastObservedPublishedConfigurationVersion = null;
             _reconcileUnsettled = false;
-            _unsettledDriftTickCount = 0;
+            _driftForcedRetryTickCount = 0;
+            _consecutiveDriftForcedReconcileCount = 0;
             _startupDegraded = false;
             _reconcileIdle = CreateCompletedSource();
             _activeReconciles = 0;
@@ -190,7 +198,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
             reconciler,
             bridge,
             ReconcileTrackedAsync,
-            ObserveSync);
+            ObserveSync,
+            logRecorder: logRecorder);
         var webuiHandler = new WebuiHandler();
 
         lock (_lifecycleGate)
@@ -273,6 +282,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
         IExtensionHostBridge13? bridge;
         IExtensionRegistration? registration;
         SvchostApiHandler? apiHandler;
+        ServiceLogRecorder? logRecorder;
         CancellationTokenSource? lifetimeCancellation;
         CancellationTokenSource? debounceCancellation;
         PeriodicTimer? driftTimer;
@@ -284,6 +294,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
             bridge = _bridge;
             registration = _registration;
             apiHandler = _apiHandler;
+            logRecorder = _logRecorder;
             lifetimeCancellation = _lifetimeCancellation;
             idleTask = GetReconcileIdleTask();
             debounceCancellation = _debounceCancellation;
@@ -295,6 +306,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
             _apiKeyService = null;
             _reconciler = null;
             _apiHandler = null;
+            _logRecorder = null;
             _lifetimeCancellation = null;
             _debounceCancellation = null;
             _driftTimer = null;
@@ -303,7 +315,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
             _lastReconcilerConsumedSettingsVersion = null;
             _lastObservedPublishedConfigurationVersion = null;
             _reconcileUnsettled = false;
-            _unsettledDriftTickCount = 0;
+            _driftForcedRetryTickCount = 0;
+            _consecutiveDriftForcedReconcileCount = 0;
         }
 
         if (bridge is null)
@@ -342,6 +355,15 @@ public sealed partial class SvchostEntry : IExtensionEntry
         }
         finally
         {
+            try
+            {
+                logRecorder?.Dispose();
+            }
+            catch (Exception)
+            {
+                // Recorder disposal is best effort during shutdown.
+            }
+
             apiHandler?.Cancel();
             apiHandler?.Dispose();
             debounceCancellation?.Dispose();

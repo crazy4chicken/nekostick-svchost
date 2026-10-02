@@ -5,6 +5,7 @@ using Nekolla.Nekostick.Contracts;
 using Nekostick.ServiceHost.Compose;
 using Nekostick.ServiceHost.Settings;
 using Nekostick.ServiceHost.Sync;
+using Nekostick.ServiceHost.Logs;
 
 namespace Nekostick.ServiceHost.Api;
 
@@ -43,7 +44,8 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
         Reconciler reconciler,
         IExtensionHostBridge13 bridge,
         Func<IEnumerable<Guid>, IEnumerable<Guid>, CancellationToken, ValueTask<SyncReport>>? reconcile = null,
-        Action<SyncReport>? syncObserver = null)
+        Action<SyncReport>? syncObserver = null,
+        ServiceLogRecorder? logRecorder = null)
     {
         _apiKeyService = apiKeyService ?? throw new ArgumentNullException(nameof(apiKeyService));
         _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
@@ -53,6 +55,7 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
         _reconcile = reconcile ?? ((services, routes, cancellationToken) =>
             _reconciler.ReconcileAsync(services, routes, cancellationToken));
         _syncObserver = syncObserver;
+        _logRecorder = logRecorder;
     }
 
     /// <inheritdoc />
@@ -155,6 +158,38 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
             {
                 return request.Method.Equals("POST", StringComparison.OrdinalIgnoreCase)
                     ? await HandleServiceActionAsync(segments[1], segments[2], segments[3], ct).ConfigureAwait(false)
+                    : Error(404, "not_found", "The API endpoint was not found.");
+            }
+
+            if (segments.Length == 5 &&
+                segments[0].Equals("configs", StringComparison.Ordinal) &&
+                segments[2].Equals("services", StringComparison.Ordinal) &&
+                segments[4].Equals("logs", StringComparison.Ordinal))
+            {
+                return request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase)
+                    ? await HandleServiceLogPageAsync(
+                            segments[1],
+                            segments[3],
+                            request.Path,
+                            ct)
+                        .ConfigureAwait(false)
+                    : Error(404, "not_found", "The API endpoint was not found.");
+            }
+
+            if (segments.Length == 6 &&
+                segments[0].Equals("configs", StringComparison.Ordinal) &&
+                segments[2].Equals("services", StringComparison.Ordinal) &&
+                segments[4].Equals("logs", StringComparison.Ordinal) &&
+                segments[5].Equals("tail", StringComparison.Ordinal))
+            {
+                return request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase)
+                    ? await HandleServiceLogTailAsync(
+                            segments[1],
+                            segments[3],
+                            request.Path,
+                            ct,
+                            cancellationToken)
+                        .ConfigureAwait(false)
                     : Error(404, "not_found", "The API endpoint was not found.");
             }
 
@@ -272,6 +307,12 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
 
     private static string[]? ParseSegments(string path)
     {
+        var queryIndex = path.IndexOf('?');
+        if (queryIndex >= 0)
+        {
+            path = path[..queryIndex];
+        }
+
         const string prefix = "/svchost/api";
         if (!path.StartsWith(prefix, StringComparison.Ordinal) ||
             (path.Length > prefix.Length && path[prefix.Length] != '/'))

@@ -16,13 +16,15 @@ public sealed partial class ReconcilerTests
     private static Reconciler CreateReconciler(
         FakeConfigurationApi configurationApi,
         FakeFullConfigurationApi fullConfiguration,
-        string dataDirectory) =>
+        string dataDirectory,
+        IExtensionSupervisorApi? supervisor = null) =>
         new(
             new SettingsStore(configurationApi),
             new ComposeFileParser(),
             new SourceResolver(),
             fullConfiguration,
-            dataDirectory);
+            dataDirectory,
+            supervisor);
 
     private static SvchostSettings CreatePathSettings(
         string sourcePath,

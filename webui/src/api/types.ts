@@ -104,6 +104,14 @@ export interface ManagedService {
   detail?: string
 }
 
+export interface LogPage {
+  service: string
+  file: number
+  fileCount: number
+  lineCount: number
+  lines: string[]
+}
+
 export interface ErrorBody {
   error?: { code?: string; message?: string }
 }

@@ -17,6 +17,26 @@
 | `POST` | `/svchost/api/configs/{name}/sync` | `X-Api-Key` | 要求该配置存在, 然后触发全量 reconciliation; 本次会读取并处理 settings 中的所有配置. |
 | `GET` | `/svchost/api/services` | `X-Api-Key` | 返回受管服务的启用状态、生命周期/健康状态及运行时信息. |
 | `POST` | `/svchost/api/services/{config}/{service}/{action}` | `X-Api-Key` | 请求单个服务 `start`、`stop` 或 `restart`; `start`/`stop` 会持久化更新配置的 `stopped` 列表并触发全量 reconcile. `restart` 先禁用并全量 reconcile, 成功后再启用并执行第二次全量 reconcile. 生命周期变更由 Host 异步调和, 不保证请求返回时进程状态已完成切换. |
+| `GET` | `/svchost/api/configs/{config}/services/{service}/logs?file=N` | `X-Api-Key` | Read one page from a service's rotating log files. |
+| `GET` | `/svchost/api/configs/{config}/services/{service}/logs/tail?fromLine=M` | `X-Api-Key` | Replay current-file lines and stream new lines using SSE. |
+
+## Service logs
+
+`GET /svchost/api/configs/{config}/services/{service}/logs?file=N` returns one existing log file:
+
+```json
+{
+  "service": "api",
+  "file": 0,
+  "fileCount": 2,
+  "lineCount": 2,
+  "lines": ["<raw log line>", "<raw log line>"]
+}
+```
+
+`file` is zero-based: `0` is the current/newest file, and `1` through `4` are progressively older archives. It defaults to `0` when omitted. `fileCount` reports the number of existing files; `lineCount` and `lines` describe the selected file, with lines ordered oldest to newest. An unknown configuration or service, or an unavailable file index, returns `404`.
+
+`GET /svchost/api/configs/{config}/services/{service}/logs/tail?fromLine=M` returns `Content-Type: text/event-stream`. `fromLine` is the zero-based index in the current file to replay and defaults to `0`; replay is best-effort if rotation occurs. Each line is sent as `data: {"line":"<JSON-escaped log line>"}\n\n`. The stream sends a `: ping` comment every 15 seconds and ends when the request is cancelled. If live logging is unavailable, the current-file replay is sent and the stream then ends.
 
 `PUT /svchost/api/configs/{name}` 会校验并保存单份 Compose YAML, 但不会预先检查它与其他配置的 global 服务名冲突. 若保存后发现冲突, 本次请求仍返回 `200` 和 `succeeded: false` 的同步报告; 配置已写入, 冲突会继续阻断后续 reconciliation, 直到修复.
 

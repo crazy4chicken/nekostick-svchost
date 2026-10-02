@@ -22,6 +22,7 @@ public sealed partial class ReconcilerTests
 
             Assert.True(report.Succeeded);
             Assert.Equal(1, full.ReplaceCallCount);
+            Assert.Equal(fixture.Snapshot.Version + 1, report.WrittenConfigurationVersion);
             Assert.Equal(0, configurationApi.WriteSettingsCallCount);
             Assert.Equal(["--changed"], full.LastChanges!.Services.Single().ArgumentList.ToArray());
         }
