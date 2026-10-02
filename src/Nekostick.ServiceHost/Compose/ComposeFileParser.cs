@@ -49,8 +49,10 @@ public sealed partial class ComposeFileParser
         }
 
         var rootEntries = Entries(root, "document", errors);
-        RejectUnknown(rootEntries, "document", new[] { "services", "strictSources" }, errors);
+
+        RejectUnknown(rootEntries, "document", new[] { "services", "strictSources", "serviceScope" }, errors);
         var strictSources = ReadOptionalBool(rootEntries, "strictSources", "document", errors) ?? false;
+        var serviceScope = ParseServiceScope(rootEntries, errors);
         if (!rootEntries.TryGetValue("services", out var servicesNode))
         {
             errors.Add(new ComposeValidationError("services", "The services mapping is required.", Line(root)));
@@ -65,7 +67,6 @@ public sealed partial class ComposeFileParser
 
         var services = new Dictionary<string, ComposeService>(StringComparer.Ordinal);
         var serviceEntries = Entries(servicesMapping, "services", errors);
-        var serviceNames = serviceEntries.Keys.ToImmutableHashSet(StringComparer.Ordinal);
         foreach (var servicePair in serviceEntries)
         {
             var serviceName = servicePair.Key;
@@ -78,7 +79,7 @@ public sealed partial class ComposeFileParser
                 continue;
             }
 
-            var service = ParseService(serviceName, servicePair.Value, strictSources, serviceNames, errors);
+            var service = ParseService(serviceName, servicePair.Value, strictSources, errors);
             if (service is not null)
             {
                 services.Add(serviceName, service);
@@ -90,7 +91,7 @@ public sealed partial class ComposeFileParser
             throw new ComposeValidationException(errors);
         }
 
-        return new ComposeFile(services, strictSources);
+        return new ComposeFile(services, strictSources, serviceScope);
     }
 
     /// <summary>Attempts to parse one document without throwing validation exceptions.</summary>
@@ -117,7 +118,6 @@ public sealed partial class ComposeFileParser
         string serviceName,
         YamlNode node,
         bool strictSources,
-        IReadOnlySet<string> serviceNames,
         ICollection<ComposeValidationError> errors)
     {
         var path = $"services.{serviceName}";
@@ -146,7 +146,6 @@ public sealed partial class ComposeFileParser
         var args = ParseStringSequence(entries, "args", path, errors) ?? ImmutableArray<string>.Empty;
         var environment = ParseEnvironment(entries, path, errors) ??
             ImmutableDictionary<string, string>.Empty;
-        ValidateTemplates(args, environment.Values, path, serviceNames, errors);
         var start = ParseStart(entries, path, errors);
         var restart = ParseRestart(entries, path, errors);
         var health = ParseHealth(entries, path, errors);

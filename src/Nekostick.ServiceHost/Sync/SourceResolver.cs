@@ -94,7 +94,7 @@ public sealed partial class SourceResolver
         ComposeSource source,
         LockSource? previousLock,
         CancellationToken cancellationToken = default) =>
-        ResolveCoreAsync(dataDirectory, configName, serviceName, source, previousLock, null, cancellationToken);
+        ResolveForConfigAsync(dataDirectory, configName, serviceName, source, previousLock, null, cancellationToken);
 
     /// <summary>Resolves one source using the current provider-specific settings.</summary>
     public ValueTask<SourceResolutionResult> ResolveAsync(
@@ -105,9 +105,33 @@ public sealed partial class SourceResolver
         LockSource? previousLock,
         IReadOnlyDictionary<string, ReleaseProviderSettings>? releaseProviderSettings,
         CancellationToken cancellationToken) =>
-        ResolveCoreAsync(dataDirectory, configName, serviceName, source, previousLock, releaseProviderSettings, cancellationToken);
+        ResolveForConfigAsync(
+            dataDirectory,
+            configName,
+            serviceName,
+            source,
+            previousLock,
+            releaseProviderSettings,
+            cancellationToken);
 
-    private async ValueTask<SourceResolutionResult> ResolveCoreAsync(
+    internal ValueTask<SourceResolutionResult> ResolveInServiceRootAsync(
+        string serviceRootDirectory,
+        string serviceName,
+        ComposeSource source,
+        LockSource? previousLock,
+        CancellationToken cancellationToken = default) =>
+        ResolveCoreAsync(serviceRootDirectory, serviceName, source, previousLock, null, cancellationToken);
+
+    internal ValueTask<SourceResolutionResult> ResolveInServiceRootAsync(
+        string serviceRootDirectory,
+        string serviceName,
+        ComposeSource source,
+        LockSource? previousLock,
+        IReadOnlyDictionary<string, ReleaseProviderSettings>? releaseProviderSettings,
+        CancellationToken cancellationToken) =>
+        ResolveCoreAsync(serviceRootDirectory, serviceName, source, previousLock, releaseProviderSettings, cancellationToken);
+
+    private ValueTask<SourceResolutionResult> ResolveForConfigAsync(
         string dataDirectory,
         string configName,
         string serviceName,
@@ -121,18 +145,46 @@ public sealed partial class SourceResolver
 
         if (string.IsNullOrWhiteSpace(dataDirectory))
         {
+            return ValueTask.FromResult(SourceResolutionResult.Failure("The extension data directory is unavailable."));
+        }
+
+        if (!IsValidConfigName(configName) || !IsValidName(serviceName))
+        {
+            return ValueTask.FromResult(SourceResolutionResult.Failure("Configuration and service names are invalid."));
+        }
+
+        var serviceRootDirectory = ServiceRootPath.Resolve(dataDirectory, ComposeServiceScope.Document, configName);
+        return ResolveInServiceRootAsync(
+            serviceRootDirectory,
+            serviceName,
+            source,
+            previousLock,
+            releaseProviderSettings,
+            cancellationToken);
+    }
+
+    private async ValueTask<SourceResolutionResult> ResolveCoreAsync(
+        string serviceRootDirectory,
+        string serviceName,
+        ComposeSource source,
+        LockSource? previousLock,
+        IReadOnlyDictionary<string, ReleaseProviderSettings>? releaseProviderSettings,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (string.IsNullOrWhiteSpace(serviceRootDirectory))
+        {
             return SourceResolutionResult.Failure("The extension data directory is unavailable.");
         }
 
-        if (!IsValidName(configName) || !IsValidName(serviceName))
+        if (!IsValidName(serviceName))
         {
-            return SourceResolutionResult.Failure("Configuration and service names are invalid.");
+            return SourceResolutionResult.Failure("Service names are invalid.");
         }
 
-        var configDirectory = Path.Combine(
-            Path.GetFullPath(dataDirectory),
-            "svchost",
-            configName);
+        var configDirectory = Path.GetFullPath(serviceRootDirectory);
         var artifactDirectory = Path.Combine(configDirectory, "artifacts");
         var temporaryDirectory = Path.Combine(configDirectory, "tmp");
         var artifactPath = Path.Combine(artifactDirectory, serviceName);

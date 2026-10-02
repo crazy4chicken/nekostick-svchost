@@ -55,7 +55,7 @@ public sealed partial class Reconciler
                 cancellationToken)
             .ConfigureAwait(false);
         var reports = desiredState.Reports;
-        if (desiredState.ParseFailed)
+        if (desiredState.HasConfigFailure)
         {
             return new SyncReport(
                 false,

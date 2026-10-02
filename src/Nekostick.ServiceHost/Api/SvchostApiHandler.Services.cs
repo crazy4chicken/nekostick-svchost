@@ -34,7 +34,7 @@ public sealed partial class SvchostApiHandler
                 continue;
             }
 
-            var names = ServiceNames(config);
+            var names = ServiceNames(config, TryParseCompose(config, _composeFileParser));
             foreach (var serviceName in names)
             {
                 LockServiceEntry? lockEntry = null;
@@ -68,7 +68,7 @@ public sealed partial class SvchostApiHandler
         string action,
         CancellationToken cancellationToken)
     {
-        if (!IsValidName(configName) || !IsValidName(serviceName))
+        if (!IsValidConfigName(configName) || !IsValidName(serviceName))
         {
             return Error(404, "not_found", "The service was not found.");
         }

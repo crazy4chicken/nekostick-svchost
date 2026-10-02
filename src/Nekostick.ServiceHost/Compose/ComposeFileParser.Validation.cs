@@ -19,39 +19,18 @@ public sealed partial class ComposeFileParser
         "^(?<value>[0-9]+(?:\\.[0-9]+)?)(?<unit>ms|s|m|h)$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    private static void ValidateTemplates(
-        IEnumerable<string> args,
-        IEnumerable<string> environmentValues,
-        string servicePath,
-        IReadOnlySet<string> serviceNames,
-        ICollection<ComposeValidationError> errors)
-    {
-        ValidateTemplateTargets(args, $"{servicePath}.args", serviceNames, errors);
-        ValidateTemplateTargets(environmentValues, $"{servicePath}.env", serviceNames, errors);
-    }
 
-    private static void ValidateTemplateTargets(
-        IEnumerable<string> values,
-        string path,
-        IReadOnlySet<string> serviceNames,
+    private static ComposeServiceScope ParseServiceScope(
+        IReadOnlyDictionary<string, YamlNode> entries,
         ICollection<ComposeValidationError> errors)
     {
-        foreach (var value in values)
+        var value = ReadOptionalString(entries, "serviceScope", "document", errors) ?? "global";
+        return value.ToLowerInvariant() switch
         {
-            foreach (var expression in ComposeTemplate.Enumerate(value))
-            {
-                if (expression.Kind != ComposeTemplateExpressionKind.Service ||
-                    Guid.TryParse(expression.Target, out _) ||
-                    serviceNames.Contains(expression.Target!))
-                {
-                    continue;
-                }
-
-                errors.Add(new ComposeValidationError(
-                    path,
-                    $"Template target '{expression.Target}' is not a Guid or a service in this document."));
-            }
-        }
+            "global" => ComposeServiceScope.Global,
+            "document" => ComposeServiceScope.Document,
+            _ => InvalidServiceScope(value, entries, errors)
+        };
     }
 
     private static string? ReadOptionalString(
@@ -193,6 +172,18 @@ public sealed partial class ComposeFileParser
         node is YamlScalarNode scalar && scalar.Value is not null ? scalar.Value : null;
 
     private static int? Line(YamlNode? node) => node is null ? null : checked((int)node.Start.Line + 1);
+
+    private static ComposeServiceScope InvalidServiceScope(
+        string value,
+        IReadOnlyDictionary<string, YamlNode> entries,
+        ICollection<ComposeValidationError> errors)
+    {
+        errors.Add(new ComposeValidationError(
+            "document.serviceScope",
+            $"Unknown service scope '{value}'. Expected global or document.",
+            entries.TryGetValue("serviceScope", out var node) ? Line(node) : null));
+        return ComposeServiceScope.Global;
+    }
 
     private static ComposeHealthCheckType InvalidHealthType(
         string value,

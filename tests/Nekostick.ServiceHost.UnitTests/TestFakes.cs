@@ -97,6 +97,8 @@ internal sealed class FakeBridge : IExtensionHostBridge13
         StatusSink = new FakeStatusSink();
     }
 
+    public string? DataDirectory { get; set; }
+
     public FakeLogWriter LogWriterSink { get; }
 
     public FakeLogger LoggerSink { get; }

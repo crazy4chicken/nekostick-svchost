@@ -31,6 +31,158 @@ public sealed class SettingsApiTests
     }
 
     [Fact]
+    public async Task Get_configs_exposes_service_scope_and_strict_sources()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
+        {
+            settings.Configs["default"] = new SvchostConfigSettings("services: {}");
+            settings.Configs["document"] = new SvchostConfigSettings(
+                "serviceScope: DoCuMeNt\nstrictSources: true\nservices: {}");
+            settings.Configs["invalid"] = new SvchostConfigSettings("services: [");
+            return settings;
+        });
+        Assert.True(setup.IsSuccess);
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("GET", string.Empty, requestPath: "/svchost/api/configs"),
+            CancellationToken.None);
+
+        Assert.Equal(200, response.StatusCode);
+        using var document = await ReadJsonAsync(response);
+        var configs = document.RootElement.EnumerateArray()
+            .ToDictionary(config => config.GetProperty("name").GetString()!, StringComparer.Ordinal);
+
+        Assert.Equal("global", configs["default"].GetProperty("serviceScope").GetString());
+        Assert.False(configs["default"].GetProperty("strictSources").GetBoolean());
+        Assert.Equal("document", configs["document"].GetProperty("serviceScope").GetString());
+        Assert.True(configs["document"].GetProperty("strictSources").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, configs["invalid"].GetProperty("serviceScope").ValueKind);
+        Assert.Equal(JsonValueKind.Null, configs["invalid"].GetProperty("strictSources").ValueKind);
+    }
+
+    [Fact]
+    public async Task Put_rejects_reserved_global_config_name()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var writesBefore = fixture.ConfigurationApi.WriteSettingsCallCount;
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest(
+                "PUT",
+                "{\"yaml\":\"services: {}\"}",
+                requestPath: "/svchost/api/configs/global"),
+            CancellationToken.None);
+
+        Assert.Equal(404, response.StatusCode);
+        Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
+    }
+
+    [Fact]
+    public async Task Service_action_rejects_reserved_global_config_name()
+    {
+        using var fixture = await CreateFixtureAsync();
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest(
+                "POST",
+                string.Empty,
+                requestPath: "/svchost/api/services/global/api/start"),
+            CancellationToken.None);
+
+        Assert.Equal(404, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delete_config_cleans_only_its_scoped_artifacts()
+    {
+        var dataDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "nekostick-svchost-tests",
+            Guid.CreateVersion7().ToString("N"));
+        Directory.CreateDirectory(dataDirectory);
+        try
+        {
+            using var fixture = await CreateFixtureAsync(dataDirectory: dataDirectory);
+            var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
+            {
+                settings.Configs["global-config"] = new SvchostConfigSettings(
+                    "serviceScope: global\nservices:\n  api:\n    source: { path: /tmp/api }\n  own-only:\n    source: { path: /tmp/own-only }",
+                    new LockModel
+                    {
+                        Services = new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal)
+                        {
+                            ["locked-only"] = new LockServiceEntry()
+                        }
+                    });
+                settings.Configs["global-sibling"] = new SvchostConfigSettings(
+                    "serviceScope: global\nservices:\n  api:\n    source: { path: /tmp/sibling-api }\n  sibling:\n    source: { path: /tmp/sibling }");
+                settings.Configs["legacy-global"] = new SvchostConfigSettings(
+                    "services: [",
+                    new LockModel
+                    {
+                        Services = new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal)
+                        {
+                            ["legacy-only"] = new LockServiceEntry()
+                        }
+                    });
+                settings.Configs["document-config"] = new SvchostConfigSettings(
+                    "serviceScope: document\nservices: {}");
+                return settings;
+            });
+            Assert.True(setup.IsSuccess);
+
+            var artifactsDirectory = Path.Combine(dataDirectory, "svchost", "global", "artifacts");
+            async Task CreateArtifactAsync(string serviceName, string content)
+            {
+                var serviceDirectory = Path.Combine(artifactsDirectory, serviceName);
+                Directory.CreateDirectory(serviceDirectory);
+                await File.WriteAllTextAsync(Path.Combine(serviceDirectory, "payload"), content);
+            }
+
+            await CreateArtifactAsync("api", "sibling-api");
+            await CreateArtifactAsync("own-only", "owned");
+            await CreateArtifactAsync("locked-only", "locked");
+            await CreateArtifactAsync("sibling", "sibling");
+            await CreateArtifactAsync("legacy-only", "legacy");
+            var documentRoot = Path.Combine(dataDirectory, "svchost", "document-config");
+            Directory.CreateDirectory(documentRoot);
+            await File.WriteAllTextAsync(Path.Combine(documentRoot, "payload"), "document");
+
+            var globalDelete = await fixture.Handler.HandleStreamingAsync(
+                CreateRequest("DELETE", string.Empty, requestPath: "/svchost/api/configs/global-config"),
+                CancellationToken.None);
+            Assert.Equal(200, globalDelete.StatusCode);
+            Assert.False(Directory.Exists(Path.Combine(artifactsDirectory, "own-only")));
+            Assert.False(Directory.Exists(Path.Combine(artifactsDirectory, "locked-only")));
+            Assert.Equal(
+                "sibling-api",
+                await File.ReadAllTextAsync(Path.Combine(artifactsDirectory, "api", "payload")));
+            Assert.True(File.Exists(Path.Combine(artifactsDirectory, "sibling", "payload")));
+            Assert.True(File.Exists(Path.Combine(artifactsDirectory, "legacy-only", "payload")));
+            Assert.True(Directory.Exists(Path.Combine(dataDirectory, "svchost", "global")));
+
+            var legacyDelete = await fixture.Handler.HandleStreamingAsync(
+                CreateRequest("DELETE", string.Empty, requestPath: "/svchost/api/configs/legacy-global"),
+                CancellationToken.None);
+            Assert.Equal(200, legacyDelete.StatusCode);
+            Assert.False(Directory.Exists(Path.Combine(artifactsDirectory, "legacy-only")));
+            Assert.True(File.Exists(Path.Combine(artifactsDirectory, "sibling", "payload")));
+
+            var documentDelete = await fixture.Handler.HandleStreamingAsync(
+                CreateRequest("DELETE", string.Empty, requestPath: "/svchost/api/configs/document-config"),
+                CancellationToken.None);
+            Assert.Equal(200, documentDelete.StatusCode);
+            Assert.False(Directory.Exists(documentRoot));
+            Assert.True(File.Exists(Path.Combine(artifactsDirectory, "sibling", "payload")));
+        }
+        finally
+        {
+            Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Put_roundtrips_release_provider_settings_and_preserves_unrelated_settings()
     {
         using var fixture = await CreateFixtureAsync();
@@ -185,7 +337,8 @@ public sealed class SettingsApiTests
     private static ExtensionStreamingRequest CreateRequest(
         string method,
         string body,
-        string? apiKey = TestApiKey)
+        string? apiKey = TestApiKey,
+        string requestPath = "/svchost/api/settings")
     {
         IEnumerable<KeyValuePair<string, IEnumerable<string>>> headers = apiKey is null
             ? Enumerable.Empty<KeyValuePair<string, IEnumerable<string>>>()
@@ -193,7 +346,7 @@ public sealed class SettingsApiTests
 
         return new ExtensionStreamingRequest(
             method,
-            "/svchost/api/settings",
+            requestPath,
             headers,
             new MemoryStream(Encoding.UTF8.GetBytes(body), writable: false));
     }
@@ -201,11 +354,13 @@ public sealed class SettingsApiTests
     private static async Task<JsonDocument> ReadJsonAsync(ExtensionStreamingResponse response) =>
         await JsonDocument.ParseAsync(response.BodyStream);
 
-    private static async Task<SettingsApiFixture> CreateFixtureAsync(bool initializeSettings = true)
+    private static async Task<SettingsApiFixture> CreateFixtureAsync(
+        bool initializeSettings = true,
+        string? dataDirectory = null)
     {
         var configurationApi = new FakeConfigurationApi();
         var settingsStore = new SettingsStore(configurationApi);
-        var bridge = new FakeBridge();
+        var bridge = new FakeBridge { DataDirectory = dataDirectory };
         var apiKeyService = new ApiKeyService(settingsStore, bridge);
         if (initializeSettings)
         {

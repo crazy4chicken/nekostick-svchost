@@ -21,14 +21,27 @@ public sealed partial class SvchostApiHandler
         var settings = read.Settings!;
         var configs = settings.Configs
             .OrderBy(pair => pair.Key, StringComparer.Ordinal)
-            .Select(pair => new
+            .Select(pair =>
             {
-                name = pair.Key,
-                services = ServiceNames(pair.Value),
-                @lock = LockSummary(pair.Value),
-                lastSync = GetLastReport(pair.Key) is { } report
-                    ? SyncReportPayload(report, pair.Key)
-                    : null
+                var compose = TryParseCompose(pair.Value, _composeFileParser);
+                return new
+                {
+                    name = pair.Key,
+                    services = ServiceNames(pair.Value, compose),
+                    serviceScope = compose is null
+                        ? null
+                        : compose.ServiceScope switch
+                        {
+                            ComposeServiceScope.Global => "global",
+                            ComposeServiceScope.Document => "document",
+                            _ => null
+                        },
+                    strictSources = compose?.StrictSources,
+                    @lock = LockSummary(pair.Value),
+                    lastSync = GetLastReport(pair.Key) is { } report
+                        ? SyncReportPayload(report, pair.Key)
+                        : null
+                };
             })
             .ToArray();
 
@@ -41,7 +54,7 @@ public sealed partial class SvchostApiHandler
         Stream bodyStream,
         CancellationToken cancellationToken)
     {
-        if (!IsValidName(name))
+        if (!IsValidConfigName(name))
         {
             return Error(404, "not_found", "The configuration was not found.");
         }
@@ -178,9 +191,32 @@ public sealed partial class SvchostApiHandler
                 return read.Error;
             }
 
-            if (!read.Settings!.Configs.TryGetValue(name, out var config) || config is null)
+            var settings = read.Settings!;
+
+            if (!settings.Configs.TryGetValue(name, out var config) || config is null)
             {
                 return Error(404, "not_found", "The configuration was not found.");
+            }
+
+            var compose = TryParseCompose(config, _composeFileParser);
+            var serviceScope = compose?.ServiceScope ?? ComposeServiceScope.Global;
+            var serviceNames = ServiceNames(config, compose);
+            var remainingGlobalServiceNames = new HashSet<string>(StringComparer.Ordinal);
+            if (serviceScope == ComposeServiceScope.Global)
+            {
+                foreach (var pair in settings.Configs)
+                {
+                    if (string.Equals(pair.Key, name, StringComparison.Ordinal) || pair.Value is null)
+                    {
+                        continue;
+                    }
+
+                    var siblingCompose = TryParseCompose(pair.Value, _composeFileParser);
+                    if (siblingCompose?.ServiceScope != ComposeServiceScope.Document)
+                    {
+                        remainingGlobalServiceNames.UnionWith(ServiceNames(pair.Value, siblingCompose));
+                    }
+                }
             }
 
             // Capture all identities before removing the settings entry so Reconciler can
@@ -210,7 +246,7 @@ public sealed partial class SvchostApiHandler
 
             var report = await ReconcileAndRememberAsync(serviceIds, routeIds, cancellationToken)
                 .ConfigureAwait(false);
-            TryDeleteConfigDirectory(name);
+            TryDeleteConfigDirectory(name, serviceScope, serviceNames, remainingGlobalServiceNames);
             return JsonResponse(
                 200,
                 new
@@ -230,7 +266,7 @@ public sealed partial class SvchostApiHandler
         string name,
         CancellationToken cancellationToken)
     {
-        if (!IsValidName(name))
+        if (!IsValidConfigName(name))
         {
             return Error(404, "not_found", "The configuration was not found.");
         }
@@ -255,30 +291,94 @@ public sealed partial class SvchostApiHandler
         return SyncResponse(report, name);
     }
 
-    private void TryDeleteConfigDirectory(string configName)
+    private void TryDeleteConfigDirectory(
+        string configName,
+        ComposeServiceScope serviceScope,
+        IReadOnlyCollection<string> serviceNames,
+        IReadOnlySet<string> remainingGlobalServiceNames)
     {
-        if (string.IsNullOrWhiteSpace(_bridge.DataDirectory))
+        var dataDirectory = _bridge.DataDirectory;
+        if (string.IsNullOrWhiteSpace(dataDirectory))
         {
             return;
         }
 
         try
         {
-            var root = Path.GetFullPath(Path.Combine(_bridge.DataDirectory, "svchost"));
-            var directory = Path.GetFullPath(Path.Combine(root, configName));
-            if (directory.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
-                Directory.Exists(directory))
+            var svchostRoot = Path.GetFullPath(Path.Combine(dataDirectory, "svchost"));
+            if (serviceScope == ComposeServiceScope.Document)
             {
-                Directory.Delete(directory, recursive: true);
+                if (string.Equals(configName, "global", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                var documentRoot = ServiceRootPath.Resolve(dataDirectory, serviceScope, configName);
+                if (IsPathWithin(svchostRoot, documentRoot) && Directory.Exists(documentRoot))
+                {
+                    TryDeletePath(documentRoot);
+                }
+
+                return;
+            }
+
+            var globalRoot = ServiceRootPath.Resolve(dataDirectory, ComposeServiceScope.Global, configName);
+            var artifactDirectory = Path.GetFullPath(Path.Combine(globalRoot, "artifacts"));
+            if (!IsPathWithin(svchostRoot, globalRoot) ||
+                !IsPathWithin(globalRoot, artifactDirectory) ||
+                !Directory.Exists(artifactDirectory))
+            {
+                return;
+            }
+
+            // Keep artifacts still declared by another global config in the shared namespace.
+            foreach (var serviceName in serviceNames)
+            {
+                if (!IsValidName(serviceName) || remainingGlobalServiceNames.Contains(serviceName))
+                {
+                    continue;
+                }
+
+                var artifactPath = Path.GetFullPath(Path.Combine(artifactDirectory, serviceName));
+                if (IsPathWithin(artifactDirectory, artifactPath))
+                {
+                    TryDeletePath(artifactPath);
+                }
             }
         }
         catch (IOException)
         {
-            // The Host configuration is already authoritative; a later sync can recreate the directory.
+            // Cleanup is best-effort after the settings entry has been removed.
         }
         catch (UnauthorizedAccessException)
         {
-            // The Host configuration is already authoritative; a later sync can recreate the directory.
+            // Cleanup is best-effort after the settings entry has been removed.
+        }
+    }
+
+    private static bool IsPathWithin(string parentDirectory, string candidate) =>
+        candidate.StartsWith(parentDirectory + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+
+    private static void TryDeletePath(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+            else if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+            // Cleanup is best-effort after the settings entry has been removed.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Cleanup is best-effort after the settings entry has been removed.
         }
     }
 }

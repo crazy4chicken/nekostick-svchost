@@ -10,7 +10,24 @@ namespace Nekostick.ServiceHost.Api;
 
 public sealed partial class SvchostApiHandler
 {
-    private static string[] ServiceNames(SvchostConfigSettings? config)
+    private static ComposeFile? TryParseCompose(SvchostConfigSettings? config, ComposeFileParser parser)
+    {
+        if (config is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return parser.Parse(config.Yaml ?? string.Empty);
+        }
+        catch (ComposeValidationException)
+        {
+            return null;
+        }
+    }
+
+    private static string[] ServiceNames(SvchostConfigSettings? config, ComposeFile? compose)
     {
         if (config is null)
         {
@@ -23,13 +40,9 @@ public sealed partial class SvchostApiHandler
             names.UnionWith(config.Lock.Services.Keys);
         }
 
-        try
+        if (compose is not null)
         {
-            names.UnionWith(new ComposeFileParser().Parse(config.Yaml ?? string.Empty).Services.Keys);
-        }
-        catch (ComposeValidationException)
-        {
-            // A malformed document remains visible through its persisted lock summary.
+            names.UnionWith(compose.Services.Keys);
         }
 
         return names.OrderBy(name => name, StringComparer.Ordinal).ToArray();

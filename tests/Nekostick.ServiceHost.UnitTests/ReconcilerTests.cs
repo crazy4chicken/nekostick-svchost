@@ -41,8 +41,8 @@ public sealed partial class ReconcilerTests
             FetchedAt = DateTimeOffset.UtcNow
         };
         var yaml = args is null
-            ? $"services:\n  api:\n    source:\n      path: {source}"
-            : $"services:\n  api:\n    source:\n      path: {source}\n    args: [\"{args}\"]";
+            ? $"serviceScope: document\nservices:\n  api:\n    source:\n      path: {source}"
+            : $"serviceScope: document\nservices:\n  api:\n    source:\n      path: {source}\n    args: [\"{args}\"]";
         return new SvchostSettings(
             null,
             new SvchostRouteSettings(Guid.CreateVersion7(), Guid.CreateVersion7()),

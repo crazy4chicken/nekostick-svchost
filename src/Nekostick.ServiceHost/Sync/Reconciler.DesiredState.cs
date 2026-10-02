@@ -19,7 +19,46 @@ public sealed partial class Reconciler
         Dictionary<(string ConfigName, string ServiceName), LockServiceEntry> UpdatedLocks,
         Dictionary<string, ImmutableHashSet<string>> ConfigServiceNames,
         Dictionary<string, string> ConfigYamls,
-        bool ParseFailed);
+        bool HasConfigFailure);
+
+    private sealed class ConfigWork
+    {
+        public ConfigWork(string configName, SvchostConfigSettings? config)
+        {
+            ConfigName = configName;
+            Config = config;
+            LockServices = config?.Lock?.Services ?? new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal);
+        }
+
+        public string ConfigName { get; }
+
+        public SvchostConfigSettings? Config { get; }
+
+        public IReadOnlyDictionary<string, LockServiceEntry> LockServices { get; }
+
+        public ComposeFile? Compose { get; set; }
+
+        public ImmutableArray<string> ServiceNames { get; set; } = ImmutableArray<string>.Empty;
+
+        public ImmutableArray<ComposeValidationError> ParseErrors { get; set; } = ImmutableArray<ComposeValidationError>.Empty;
+
+        public string? EntryError { get; set; }
+
+        public string? GlobalConflictError { get; set; }
+
+        public string? ServiceRootDirectory { get; set; }
+
+        public List<ServiceWork> Services { get; } = new();
+    }
+
+    private sealed record ServiceWork(
+        string ServiceName,
+        ComposeService ComposeService,
+        LockServiceEntry? PreviousLock,
+        SourceResolutionResult Resolution,
+        Guid? ServiceId);
+
+    private sealed record GlobalServiceTarget(Guid? ServiceId, string ConfigName);
 
     private async ValueTask<DesiredStatePlan> BuildDesiredStateAsync(
         SvchostSettings settings,
@@ -37,32 +76,25 @@ public sealed partial class Reconciler
         var updatedLocks = new Dictionary<(string ConfigName, string ServiceName), LockServiceEntry>();
         var configServiceNames = new Dictionary<string, ImmutableHashSet<string>>(StringComparer.Ordinal);
         var configYamls = new Dictionary<string, string>(StringComparer.Ordinal);
-        var parseFailed = false;
+        var configWork = new List<ConfigWork>();
+        var hasConfigFailure = false;
         managedServiceIds.UnionWith(extraManagedServiceIds);
         managedRouteIds.UnionWith(extraManagedRouteIds);
 
         foreach (var configPair in settings.Configs.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var configName = configPair.Key;
-            var config = configPair.Value;
+            var work = new ConfigWork(configPair.Key, configPair.Value);
+            configWork.Add(work);
+            var config = work.Config;
             if (config is null)
             {
-                parseFailed = true;
-                reports.Add(new ServiceSyncReport(
-                    configName,
-                    string.Empty,
-                    false,
-                    false,
-                    null,
-                    ImmutableArray<Guid>.Empty,
-                    "The configuration entry is null.",
-                    SyncErrorCode.ReconcileFailed));
+                work.EntryError = "The configuration entry is null.";
+                hasConfigFailure = true;
                 continue;
             }
 
-            var lockServices = config.Lock?.Services ?? new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal);
-            foreach (var oldLock in lockServices.Values)
+            foreach (var oldLock in work.LockServices.Values)
             {
                 if (oldLock is null)
                 {
@@ -90,36 +122,62 @@ public sealed partial class Reconciler
             }
             catch (ComposeValidationException exception)
             {
-                parseFailed = true;
-                reports.AddRange(
-                    exception.Errors.Select(error => new ServiceSyncReport(
-                        configName,
-                        ServiceNameFromPath(error.Path),
-                        false,
-                        false,
-                        null,
-                        ImmutableArray<Guid>.Empty,
-                        error.Message,
-                        SyncErrorCode.ReconcileFailed)));
+                work.ParseErrors = exception.Errors;
+                hasConfigFailure = true;
                 continue;
             }
-            configServiceNames[configName] = compose.Services.Keys.ToImmutableHashSet(StringComparer.Ordinal);
-            configYamls[configName] = config.Yaml ?? string.Empty;
 
-            var serviceStates = new List<(
-                string ServiceName,
-                ComposeService ComposeService,
-                LockServiceEntry? PreviousLock,
-                SourceResolutionResult Resolution,
-                Guid? ServiceId)>();
-            foreach (var servicePair in compose.Services.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            work.Compose = compose;
+            work.ServiceNames = compose.Services.Keys
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToImmutableArray();
+            configServiceNames[work.ConfigName] = work.ServiceNames.ToImmutableHashSet(StringComparer.Ordinal);
+            configYamls[work.ConfigName] = config.Yaml ?? string.Empty;
+        }
+
+        var globalServiceOwners = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var work in configWork)
+        {
+            var compose = work.Compose;
+            if (compose is null || compose.ServiceScope != ComposeServiceScope.Global)
             {
-                var serviceName = servicePair.Key;
-                var composeService = servicePair.Value;
-                lockServices.TryGetValue(serviceName, out var previousLock);
-                var resolved = await _sourceResolver.ResolveAsync(
-                        _dataDirectory,
-                        configName,
+                continue;
+            }
+
+            var conflictingServiceName = work.ServiceNames.FirstOrDefault(globalServiceOwners.ContainsKey);
+            if (conflictingServiceName is not null)
+            {
+                var ownerConfigName = globalServiceOwners[conflictingServiceName];
+                work.GlobalConflictError =
+                    $"Global service '{conflictingServiceName}' is already declared by config '{ownerConfigName}'; " +
+                    $"config '{work.ConfigName}' was not synchronized.";
+                hasConfigFailure = true;
+                continue;
+            }
+
+            foreach (var serviceName in work.ServiceNames)
+            {
+                globalServiceOwners.Add(serviceName, work.ConfigName);
+            }
+        }
+
+        foreach (var work in configWork)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var compose = work.Compose;
+            if (compose is null || work.GlobalConflictError is not null)
+            {
+                continue;
+            }
+
+            var serviceRootDirectory = ServiceRootPath.Resolve(_dataDirectory, compose.ServiceScope, work.ConfigName);
+            work.ServiceRootDirectory = serviceRootDirectory;
+            foreach (var serviceName in work.ServiceNames)
+            {
+                var composeService = compose.Services[serviceName];
+                work.LockServices.TryGetValue(serviceName, out var previousLock);
+                var resolved = await _sourceResolver.ResolveInServiceRootAsync(
+                        serviceRootDirectory,
                         serviceName,
                         composeService.Source,
                         previousLock?.Source,
@@ -131,16 +189,93 @@ public sealed partial class Reconciler
                     : resolved.Succeeded && resolved.Source is not null && resolved.ArtifactPath is not null
                         ? Guid.CreateVersion7()
                         : (Guid?)null;
-                serviceStates.Add((serviceName, composeService, previousLock, resolved, serviceId));
+                work.Services.Add(new ServiceWork(serviceName, composeService, previousLock, resolved, serviceId));
+            }
+        }
+
+        var globalServiceTargets = new Dictionary<string, GlobalServiceTarget>(StringComparer.Ordinal);
+        foreach (var work in configWork)
+        {
+            if (work.Compose?.ServiceScope != ComposeServiceScope.Global || work.GlobalConflictError is not null)
+            {
+                continue;
             }
 
-            var serviceIds = serviceStates
+            foreach (var service in work.Services)
+            {
+                globalServiceTargets.Add(
+                    service.ServiceName,
+                    new GlobalServiceTarget(service.ServiceId, work.ConfigName));
+            }
+        }
+
+        foreach (var work in configWork)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var configName = work.ConfigName;
+            if (work.EntryError is not null)
+            {
+                reports.Add(new ServiceSyncReport(
+                    configName,
+                    string.Empty,
+                    false,
+                    false,
+                    null,
+                    ImmutableArray<Guid>.Empty,
+                    work.EntryError,
+                    SyncErrorCode.ReconcileFailed));
+                continue;
+            }
+
+            if (!work.ParseErrors.IsDefaultOrEmpty)
+            {
+                reports.AddRange(
+                    work.ParseErrors.Select(error => new ServiceSyncReport(
+                        configName,
+                        ServiceNameFromPath(error.Path),
+                        false,
+                        false,
+                        null,
+                        ImmutableArray<Guid>.Empty,
+                        error.Message,
+                        SyncErrorCode.ReconcileFailed)));
+                continue;
+            }
+
+            var compose = work.Compose!;
+            if (work.GlobalConflictError is { } globalConflictError)
+            {
+                reports.AddRange(
+                    work.ServiceNames
+                        .Select(serviceName => new ServiceSyncReport(
+                            configName,
+                            serviceName,
+                            false,
+                            false,
+                            null,
+                            ImmutableArray<Guid>.Empty,
+                            globalConflictError,
+                            SyncErrorCode.ReconcileFailed)));
+                continue;
+            }
+
+            var config = work.Config!;
+            var serviceIds = work.Services
                 .Where(state => state.ServiceId is not null)
                 .ToDictionary(state => state.ServiceName, state => state.ServiceId!.Value, StringComparer.Ordinal);
             Func<string, Guid?> resolveTemplateTarget = target =>
-                serviceIds.TryGetValue(target, out var serviceId) ? serviceId : null;
+            {
+                if (compose.ServiceScope == ComposeServiceScope.Document && compose.Services.ContainsKey(target))
+                {
+                    return serviceIds.TryGetValue(target, out var serviceId) ? serviceId : null;
+                }
 
-            foreach (var state in serviceStates)
+                return globalServiceTargets.TryGetValue(target, out var globalTarget)
+                    ? globalTarget.ServiceId
+                    : null;
+            };
+
+            foreach (var state in work.Services)
             {
                 var serviceName = state.ServiceName;
                 var composeService = state.ComposeService;
@@ -219,7 +354,7 @@ public sealed partial class Reconciler
                 }
 
                 var routeIds = ResolveRouteIds(composeService.Route, previousLock);
-                var workingDirectory = Path.GetFullPath(Path.Combine(_dataDirectory, "svchost", configName));
+                var workingDirectory = work.ServiceRootDirectory!;
                 var now = DateTimeOffset.UtcNow;
                 var isStopped = config.Stopped?.Contains(serviceName, StringComparer.Ordinal) == true;
                 var serviceConfiguration = new ServiceConfiguration(
@@ -286,7 +421,7 @@ public sealed partial class Reconciler
             updatedLocks,
             configServiceNames,
             configYamls,
-            parseFailed);
+            hasConfigFailure);
     }
 
     private static RouteConfiguration CreateRouteConfiguration(

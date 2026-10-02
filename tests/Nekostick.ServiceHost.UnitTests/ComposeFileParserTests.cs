@@ -51,6 +51,36 @@ public sealed class ComposeFileParserTests
     }
 
     [Fact]
+    public void Parse_defaults_service_scope_to_global()
+    {
+        var document = _parser.Parse("services: {}");
+
+        Assert.Equal(ComposeServiceScope.Global, document.ServiceScope);
+    }
+
+    [Theory]
+    [InlineData("global", ComposeServiceScope.Global)]
+    [InlineData("GLOBAL", ComposeServiceScope.Global)]
+    [InlineData("Document", ComposeServiceScope.Document)]
+    [InlineData("dOcUmEnT", ComposeServiceScope.Document)]
+    public void Parse_service_scope_is_case_insensitive(string value, ComposeServiceScope expected)
+    {
+        var document = _parser.Parse($"serviceScope: {value}\nservices: {{}}");
+
+        Assert.Equal(expected, document.ServiceScope);
+    }
+
+    [Fact]
+    public void Parse_rejects_unknown_service_scope()
+    {
+        var exception = Assert.Throws<ComposeValidationException>(() =>
+            _parser.Parse("serviceScope: local\nservices: {}"));
+
+        var error = Assert.Single(exception.Errors, candidate => candidate.Path == "document.serviceScope");
+        Assert.Contains("global or document", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Parse_template_targets_accept_same_document_guid_host_and_escaped_values()
     {
         var document = _parser.Parse("""
@@ -68,17 +98,16 @@ public sealed class ComposeFileParserTests
     }
 
     [Fact]
-    public void Parse_template_target_unknown_service_rejects_with_value_path()
+    public void Parse_template_target_unknown_service_is_deferred_until_reconciliation()
     {
-        var exception = Assert.Throws<ComposeValidationException>(() => _parser.Parse("""
+        var document = _parser.Parse("""
             services:
               api:
                 source: { path: /tmp/api }
                 args: ['${PORT@nope}']
-            """));
+            """);
 
-        var error = Assert.Single(exception.Errors, candidate => candidate.Path == "services.api.args");
-        Assert.Contains("nope", error.Message, StringComparison.Ordinal);
+        Assert.Equal("${PORT@nope}", document.Services["api"].Args.Single());
     }
 
     [Theory]

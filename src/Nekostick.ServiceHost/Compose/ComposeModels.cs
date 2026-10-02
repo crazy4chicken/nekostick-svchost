@@ -2,16 +2,30 @@ using System.Collections.Immutable;
 
 namespace Nekostick.ServiceHost.Compose;
 
+/// <summary>Controls whether a service shares the global or its document's service directory.</summary>
+public enum ComposeServiceScope
+{
+    /// <summary>Uses the shared global service directory.</summary>
+    Global,
+
+    /// <summary>Uses the owning compose document's service directory.</summary>
+    Document
+}
+
 /// <summary>Represents one validated svchost YAML document.</summary>
 public sealed class ComposeFile
 {
     /// <summary>Creates a compose document.</summary>
-    public ComposeFile(IReadOnlyDictionary<string, ComposeService> services, bool strictSources = false)
+    public ComposeFile(
+        IReadOnlyDictionary<string, ComposeService> services,
+        bool strictSources = false,
+        ComposeServiceScope serviceScope = ComposeServiceScope.Global)
     {
         Services = services is null
             ? throw new ArgumentNullException(nameof(services))
             : services.ToImmutableDictionary(StringComparer.Ordinal);
         StrictSources = strictSources;
+        ServiceScope = serviceScope;
     }
 
     /// <summary>Gets services keyed by their validated names.</summary>
@@ -19,6 +33,9 @@ public sealed class ComposeFile
 
     /// <summary>Gets whether URL and path sources must declare a SHA-256 digest.</summary>
     public bool StrictSources { get; }
+
+    /// <summary>Gets the root directory scope used by the services.</summary>
+    public ComposeServiceScope ServiceScope { get; }
 }
 
 /// <summary>Describes one service in a compose document.</summary>

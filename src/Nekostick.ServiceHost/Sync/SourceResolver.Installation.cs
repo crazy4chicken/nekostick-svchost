@@ -62,6 +62,10 @@ public sealed partial class SourceResolver
         name[0] is >= 'a' and <= 'z' or >= '0' and <= '9' &&
         name.All(static value => value is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
 
+    private static bool IsValidConfigName(string? name) =>
+        IsValidName(name) &&
+        !string.Equals(name, "global", StringComparison.OrdinalIgnoreCase);
+
     private static HttpClient CreateSharedHttpClient() =>
         new(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All })
         {

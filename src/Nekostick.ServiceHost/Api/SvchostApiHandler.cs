@@ -286,6 +286,10 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
         IsNameCharacter(value[0], allowHyphen: false) &&
         value.Skip(1).All(character => IsNameCharacter(character, allowHyphen: true));
 
+    private static bool IsValidConfigName(string value) =>
+        IsValidName(value) &&
+        !value.Equals("global", StringComparison.OrdinalIgnoreCase);
+
     private static bool IsNameCharacter(char character, bool allowHyphen) =>
         character is >= 'a' and <= 'z' ||
         character is >= '0' and <= '9' ||

@@ -163,7 +163,8 @@ public sealed class SvchostSettings
             if (!System.Text.RegularExpressions.Regex.IsMatch(
                     pair.Key,
                     SvchostSettingsSchema.NamePattern,
-                    System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant) ||
+                pair.Key.Equals("global", StringComparison.OrdinalIgnoreCase))
             {
                 errors.Add($"configs.{pair.Key} has an invalid name.");
             }

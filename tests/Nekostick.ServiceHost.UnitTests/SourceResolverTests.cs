@@ -39,6 +39,30 @@ public sealed class SourceResolverTests
     }
 
     [Fact]
+    public async Task Resolve_rejects_reserved_global_config_name()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var dataDirectory = Path.Combine(root, "data");
+            var result = await new SourceResolver().ResolveAsync(
+                dataDirectory,
+                "global",
+                "api",
+                new ComposeSource(null, Path.Combine(root, "source.bin")),
+                null);
+
+            Assert.False(result.Succeeded);
+            Assert.Contains("Configuration and service names are invalid", result.Error, StringComparison.Ordinal);
+            Assert.False(Directory.Exists(Path.Combine(dataDirectory, "svchost", "global")));
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+    [Fact]
     public async Task Resolve_local_path_installs_artifact_with_executable_bit()
     {
         if (OperatingSystem.IsWindows())

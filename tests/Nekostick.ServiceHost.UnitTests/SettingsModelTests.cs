@@ -77,6 +77,19 @@ public sealed class SettingsModelTests
         Assert.Contains(errors, error => error.Contains("configs.bad_name has an invalid name", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("global")]
+    [InlineData("GLOBAL")]
+    public void Validate_rejects_reserved_global_config_names(string name)
+    {
+        var settings = CreateSettings();
+        settings.Configs[name] = new SvchostConfigSettings("services: {}");
+
+        var errors = settings.Validate();
+
+        Assert.Contains(errors, error => error.Contains($"configs.{name} has an invalid name", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task SettingsStore_roundtrips_settings_with_null_api_key()
     {

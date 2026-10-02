@@ -24,6 +24,7 @@ public sealed partial class ReconcilerTests
             var routeId = Guid.CreateVersion7();
             var settings = CreatePathSettings(sourcePath, serviceId);
             settings.Configs["demo"]!.Yaml = $"""
+                serviceScope: document
                 services:
                   api:
                     source:
