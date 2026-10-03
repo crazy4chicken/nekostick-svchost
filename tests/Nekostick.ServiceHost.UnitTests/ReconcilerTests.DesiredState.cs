@@ -18,9 +18,10 @@ public sealed partial class ReconcilerTests
             var configurationApi = new FakeConfigurationApi(ToExtensionSettings(fixture.Settings));
             var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory);
 
-            var report = await reconciler.ReconcileAsync();
+            var report = await reconciler.ReconcileAsync("test");
 
             Assert.True(report.Succeeded);
+            Assert.Equal("test", report.Trigger);
             Assert.Equal(1, full.ReplaceCallCount);
             Assert.Equal(fixture.Snapshot.Version + 1, report.WrittenConfigurationVersion);
             Assert.Equal(0, configurationApi.WriteSettingsCallCount);
@@ -100,7 +101,7 @@ public sealed partial class ReconcilerTests
             var configurationApi = new FakeConfigurationApi(ToExtensionSettings(settings));
             var reconciler = CreateReconciler(configurationApi, full, dataDirectory);
 
-            var firstReport = await reconciler.ReconcileAsync();
+            var firstReport = await reconciler.ReconcileAsync("test");
 
             Assert.True(firstReport.Succeeded);
             var firstApi = full.Snapshot.Services.Single(service => service.Id == apiServiceId);
@@ -110,7 +111,7 @@ public sealed partial class ReconcilerTests
             Assert.Equal(expectedDbTemplate, firstApi.Environment["DB_PORT"]);
             Assert.Equal(guidTemplate, firstApi.Environment["GUID_PORT"]);
 
-            var secondReport = await reconciler.ReconcileAsync();
+            var secondReport = await reconciler.ReconcileAsync("test");
 
             Assert.True(secondReport.Succeeded);
             var secondApi = full.Snapshot.Services.Single(service => service.Id == apiServiceId);
@@ -189,7 +190,7 @@ public sealed partial class ReconcilerTests
                 full,
                 dataDirectory);
 
-            var report = await reconciler.ReconcileAsync();
+            var report = await reconciler.ReconcileAsync("test");
 
             Assert.True(report.Succeeded);
             var globalRoot = Path.GetFullPath(Path.Combine(dataDirectory, "svchost", "global"));
@@ -285,7 +286,7 @@ public sealed partial class ReconcilerTests
                 full,
                 dataDirectory);
 
-            var report = await reconciler.ReconcileAsync();
+            var report = await reconciler.ReconcileAsync("test");
 
             Assert.False(report.Succeeded);
             Assert.Equal(SyncErrorCode.ReconcileFailed, report.FailureCode);
@@ -304,6 +305,7 @@ public sealed partial class ReconcilerTests
             Assert.All(failedConfigServices, service =>
             {
                 Assert.False(service.Succeeded);
+                Assert.Equal(ServiceDecision.Skipped, service.Decision);
                 Assert.Equal(SyncErrorCode.ReconcileFailed, service.FailureCode);
                 Assert.Contains("api", service.Error!, StringComparison.Ordinal);
                 Assert.Contains("alpha", service.Error!, StringComparison.Ordinal);
@@ -349,7 +351,7 @@ public sealed partial class ReconcilerTests
                 full,
                 dataDirectory);
 
-            var report = await reconciler.ReconcileAsync();
+            var report = await reconciler.ReconcileAsync("test");
 
             Assert.False(report.Succeeded);
             var apiReport = Assert.Single(report.Services, service => service.ServiceName == "api");

@@ -26,4 +26,7 @@ public sealed record SyncReport(
 
     /// <summary>Gets additive notes such as orphan services swept from the global snapshot.</summary>
     public ImmutableArray<string> Notes { get; init; } = ImmutableArray<string>.Empty;
+
+    /// <summary>Gets the source that triggered this reconciliation.</summary>
+    public string Trigger { get; init; } = "unknown";
 }

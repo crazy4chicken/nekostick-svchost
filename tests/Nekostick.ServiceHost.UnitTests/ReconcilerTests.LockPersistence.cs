@@ -1,4 +1,5 @@
 using Xunit;
+using Nekostick.ServiceHost.Sync;
 
 namespace Nekostick.ServiceHost.UnitTests;
 
@@ -21,7 +22,7 @@ public sealed partial class ReconcilerTests
             var full = new FakeFullConfigurationApi(CreateSnapshot());
             var reconciler = CreateReconciler(new FakeConfigurationApi(ToExtensionSettings(settings)), full, dataDirectory);
 
-            var report = await reconciler.ReconcileAsync();
+            var report = await reconciler.ReconcileAsync("test");
 
             Assert.True(report.Succeeded);
             Assert.Equal(1, full.ReplaceCallCount);
@@ -46,9 +47,13 @@ public sealed partial class ReconcilerTests
             var configurationApi = new FakeConfigurationApi(ToExtensionSettings(fixture.Settings));
             var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory);
 
-            var report = await reconciler.ReconcileAsync();
+            var report = await reconciler.ReconcileAsync("test");
 
             Assert.True(report.Succeeded);
+            var serviceReport = Assert.Single(report.Services);
+            Assert.True(serviceReport.Changed);
+            Assert.Equal(ServiceDecision.Reused, serviceReport.Decision);
+            Assert.Empty(serviceReport.Diffs);
             Assert.Equal(0, full.ReplaceCallCount);
             Assert.Equal("api-v2", await File.ReadAllTextAsync(
                 Path.Combine(fixture.DataDirectory, "svchost", "demo", "artifacts", "api")));
@@ -82,7 +87,7 @@ public sealed partial class ReconcilerTests
             var configurationApi = new FakeConfigurationApi(ToExtensionSettings(fixture.Settings));
             var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory);
 
-            var firstReport = await reconciler.ReconcileAsync();
+            var firstReport = await reconciler.ReconcileAsync("test");
 
             Assert.False(firstReport.Succeeded);
             Assert.True(firstReport.Services.Single(service => service.ServiceName == "api").Succeeded);
@@ -91,7 +96,7 @@ public sealed partial class ReconcilerTests
             Assert.Equal(0, full.ReplaceCallCount);
             Assert.Equal(1, configurationApi.WriteSettingsCallCount);
 
-            var secondReport = await reconciler.ReconcileAsync();
+            var secondReport = await reconciler.ReconcileAsync("test");
 
             Assert.False(secondReport.Succeeded);
             Assert.True(secondReport.Services.Single(service => service.ServiceName == "api").Succeeded);

@@ -167,6 +167,7 @@ public sealed partial class SvchostApiHandler
             var report = await ReconcileAndRememberAsync(
                     Array.Empty<Guid>(),
                     Array.Empty<Guid>(),
+                    "api-config-put",
                     cancellationToken)
                 .ConfigureAwait(false);
             return SyncResponse(report, name);
@@ -244,7 +245,11 @@ public sealed partial class SvchostApiHandler
                 return ErrorForConfiguration(write.Errors);
             }
 
-            var report = await ReconcileAndRememberAsync(serviceIds, routeIds, cancellationToken)
+            var report = await ReconcileAndRememberAsync(
+                    serviceIds,
+                    routeIds,
+                    "api-config-delete",
+                    cancellationToken)
                 .ConfigureAwait(false);
             TryDeleteConfigDirectory(name, serviceScope, serviceNames, remainingGlobalServiceNames);
             return JsonResponse(
@@ -286,6 +291,7 @@ public sealed partial class SvchostApiHandler
         var report = await ReconcileAndRememberAsync(
                 Array.Empty<Guid>(),
                 Array.Empty<Guid>(),
+                "api-config-sync",
                 cancellationToken)
             .ConfigureAwait(false);
         return SyncResponse(report, name);

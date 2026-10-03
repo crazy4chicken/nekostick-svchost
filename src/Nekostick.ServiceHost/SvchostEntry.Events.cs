@@ -58,7 +58,7 @@ public sealed partial class SvchostEntry
             return;
         }
 
-        ScheduleDebouncedReconcile(cancellationToken);
+        ScheduleDebouncedReconcile(cancellationToken, "settings-event");
     }
 
     private bool IsSelfSettledSettingsVersion(long version)
@@ -102,6 +102,7 @@ public sealed partial class SvchostEntry
 
     private void ScheduleDebouncedReconcile(
         CancellationToken eventCancellationToken,
+        string trigger,
         bool force = false,
         bool skipIfBusy = false)
     {
@@ -121,6 +122,13 @@ public sealed partial class SvchostEntry
         lock (_debounceGate)
         {
             previous = _debounceCancellation;
+            if (string.Equals(_debounceTrigger, "settings-event", StringComparison.Ordinal) &&
+                trigger.StartsWith("drift-", StringComparison.Ordinal))
+            {
+                trigger = "settings-event";
+            }
+
+            _debounceTrigger = trigger;
             current = CancellationTokenSource.CreateLinkedTokenSource(
                 eventCancellationToken,
                 lifetimeToken);
@@ -136,13 +144,14 @@ public sealed partial class SvchostEntry
             // The superseded debounce may have completed between the two locks.
         }
 
-        _ = DebounceAndReconcileAsync(current, force, skipIfBusy);
+        _ = DebounceAndReconcileAsync(current, force, skipIfBusy, trigger);
     }
 
     private async Task DebounceAndReconcileAsync(
         CancellationTokenSource debounceCancellation,
         bool force,
-        bool skipIfBusy)
+        bool skipIfBusy,
+        string trigger)
     {
         try
         {
@@ -160,6 +169,7 @@ public sealed partial class SvchostEntry
             var report = await ReconcileTrackedAsync(
                     Array.Empty<Guid>(),
                     Array.Empty<Guid>(),
+                    trigger,
                     debounceCancellation.Token)
                 .ConfigureAwait(false);
             RecordSyncReport(report);
@@ -188,7 +198,8 @@ public sealed partial class SvchostEntry
                 null,
                 exception.Message)
             {
-                FailureCode = SyncErrorCode.ReconcileFailed
+                FailureCode = SyncErrorCode.ReconcileFailed,
+                Trigger = trigger
             };
             RecordSyncReport(report);
             if (force)
@@ -204,6 +215,7 @@ public sealed partial class SvchostEntry
                 if (ReferenceEquals(_debounceCancellation, debounceCancellation))
                 {
                     _debounceCancellation = null;
+                    _debounceTrigger = null;
                 }
             }
 
@@ -341,6 +353,7 @@ public sealed partial class SvchostEntry
             {
                 ScheduleDebouncedReconcile(
                     cancellationToken,
+                    trigger: reconcileUnsettled ? "drift-unsettled-retry" : "drift-host-version",
                     force: true,
                     skipIfBusy: true);
             }
@@ -350,6 +363,11 @@ public sealed partial class SvchostEntry
 
         var settingsVersionMismatch = !lastConsumedSettingsVersion.HasValue ||
             settingsRead.Value.Version != lastConsumedSettingsVersion.Value;
+        var driftTrigger = reconcileUnsettled
+            ? "drift-unsettled-retry"
+            : hostVersionMismatch && !settingsVersionMismatch
+                ? "drift-host-version"
+                : "drift-settings-version";
         if ((!hostVersionMismatch && !settingsVersionMismatch && !reconcileUnsettled) ||
             !driftForcedRetryDue ||
             IsReconcileInFlight())
@@ -359,6 +377,7 @@ public sealed partial class SvchostEntry
 
         ScheduleDebouncedReconcile(
             cancellationToken,
+            trigger: driftTrigger,
             force: true,
             skipIfBusy: true);
     }

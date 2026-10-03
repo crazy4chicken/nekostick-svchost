@@ -11,3 +11,13 @@
 - global 服务名冲突会阻断整轮 reconcile: 不会替换 Host 配置、持久化 lock 或调用 `ResumeAsync`, 所以占用名称的配置及无关配置 (包括 `document`) 均不会生效. 其他配置的来源仍可能已解析, 个别服务报告可能显示成功, 但不表示服务已上线; 冲突存在期间后续 reconcile 仍会被阻断.
 Managed service stdout and stderr are recorded under `<data directory>/svchost/<config|global>/logs/<service>.log`, with rotation at 1,000 lines per file and five files retained. This is enabled only when the host provides the API 1.4 service-output capability; otherwise it is silently disabled.
 
+## Managed service ownership and conflicts
+
+svchost reconciles managed services and routes back to the desired state on every reconciliation. Use the svchost API's `start`, `stop`, and `restart` actions to operate managed services. Direct changes to the Host configuration surface are external drift. Reconciliations that detect it restore svchost's desired state; only startup or Host-version-drift reconciliations emit an external-drift warning. A committed configuration write is reported as corrected; if no write commits, the warning says correction was not committed. If a pending settings event is superseded by a drift tick, the preserved `settings-event` trigger may log the correction at information level rather than as an external-drift warning. Managed-service status is exposed through the API, where reconciliation outcomes and failures are visible.
+
+Routes carry `OwnerExtensionId` metadata, while managed service IDs are held in svchost's configuration locks. `preview.4` `ServiceConfiguration` carries no owner field, so service ownership is enforced by this svchost convention rather than by the Host.
+
+## Observability
+
+The optional `observability.logLevel` setting defaults to `information` when omitted, `null`, or unrecognized; `warning` is matched case-insensitively. At `warning`, informational reconciliation summaries and per-service decision lines are suppressed. Startup/Host-version-drift external-drift warnings (including uncommitted corrections) and whole-reconcile failures remain logged at warning level.
+

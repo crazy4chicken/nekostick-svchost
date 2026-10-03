@@ -29,12 +29,13 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
     private readonly ComposeFileParser _composeFileParser;
     private readonly Reconciler _reconciler;
     private readonly IExtensionHostBridge13 _bridge;
-    private readonly Func<IEnumerable<Guid>, IEnumerable<Guid>, CancellationToken, ValueTask<SyncReport>> _reconcile;
+    private readonly Func<IEnumerable<Guid>, IEnumerable<Guid>, string, CancellationToken, ValueTask<SyncReport>> _reconcile;
     private readonly Action<SyncReport>? _syncObserver;
     private readonly SemaphoreSlim _mutationGate = new(1, 1);
     private readonly object _reportGate = new();
     private readonly Dictionary<string, SyncReport> _lastReports = new(StringComparer.Ordinal);
     private SyncReport? _lastRunFailure;
+    private readonly ServiceFailureTracker _serviceFailureTracker = new();
     private readonly CancellationTokenSource _lifetimeCancellation = new();
 
     public SvchostApiHandler(
@@ -43,7 +44,7 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
         ComposeFileParser composeFileParser,
         Reconciler reconciler,
         IExtensionHostBridge13 bridge,
-        Func<IEnumerable<Guid>, IEnumerable<Guid>, CancellationToken, ValueTask<SyncReport>>? reconcile = null,
+        Func<IEnumerable<Guid>, IEnumerable<Guid>, string, CancellationToken, ValueTask<SyncReport>>? reconcile = null,
         Action<SyncReport>? syncObserver = null,
         ServiceLogRecorder? logRecorder = null)
     {
@@ -52,8 +53,8 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
         _composeFileParser = composeFileParser ?? throw new ArgumentNullException(nameof(composeFileParser));
         _reconciler = reconciler ?? throw new ArgumentNullException(nameof(reconciler));
         _bridge = bridge ?? throw new ArgumentNullException(nameof(bridge));
-        _reconcile = reconcile ?? ((services, routes, cancellationToken) =>
-            _reconciler.ReconcileAsync(services, routes, cancellationToken));
+        _reconcile = reconcile ?? ((services, routes, trigger, cancellationToken) =>
+            _reconciler.ReconcileAsync(services, routes, trigger, cancellationToken));
         _syncObserver = syncObserver;
         _logRecorder = logRecorder;
     }
@@ -73,6 +74,14 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
         ArgumentNullException.ThrowIfNull(report);
         RememberReport(report);
     }
+
+    /// <summary>Records a lifecycle observation supplied by the supervisor.</summary>
+    public void RecordServiceObservation(Guid serviceId, ExtensionServiceLifecycleState state) =>
+        _serviceFailureTracker.Observe(serviceId, state);
+
+    /// <summary>Resets lifecycle observation state when the supervisor has no snapshot.</summary>
+    public void ResetServiceObservation(Guid serviceId) =>
+        _serviceFailureTracker.Reset(serviceId);
 
     /// <inheritdoc />
     public async ValueTask<ExtensionStreamingResponse> HandleStreamingAsync(
@@ -208,12 +217,13 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
     private async ValueTask<SyncReport> ReconcileAndRememberAsync(
         IEnumerable<Guid> serviceIds,
         IEnumerable<Guid> routeIds,
+        string trigger,
         CancellationToken cancellationToken)
     {
         SyncReport report;
         try
         {
-            report = await _reconcile(serviceIds, routeIds, cancellationToken).ConfigureAwait(false);
+            report = await _reconcile(serviceIds, routeIds, trigger, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -229,9 +239,12 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
                 null,
                 exception.Message)
             {
-                FailureCode = SyncErrorCode.ReconcileFailed
+                FailureCode = SyncErrorCode.ReconcileFailed,
+                Trigger = trigger
             };
         }
+
+        report = report with { Trigger = trigger };
 
         RememberReport(report);
         return report;

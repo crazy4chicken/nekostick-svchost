@@ -115,14 +115,17 @@ public sealed partial class Reconciler
                     IsOwnedRoute(route.MetadataJson))
                 .Select(route => route.Id)
                 .ToHashSet();
-            foreach (var index in Enumerable.Range(0, reports.Count).ToArray())
+            for (var index = 0; index < reports.Count; index++)
             {
                 var report = reports[index];
-                if (report.FailureCode == SyncErrorCode.SourceFailed && report.ServiceId is { } serviceId)
+                if (report.ServiceId is { } serviceId &&
+                    desiredState.SourceFailureServiceIds.Contains(serviceId))
                 {
+                    var isPreserved = preservedSourceServiceIds.Contains(serviceId);
                     reports[index] = report with
                     {
-                        NodeLocal = preservedSourceServiceIds.Contains(serviceId)
+                        NodeLocal = report.FailureCode == SyncErrorCode.SourceFailed && isPreserved,
+                        Decision = isPreserved ? ServiceDecision.Preserved : ServiceDecision.Failed
                     };
                 }
             }
@@ -132,17 +135,43 @@ public sealed partial class Reconciler
                 desiredState.ConfiguredLockServiceIds,
                 desiredServiceIds);
             orphanNotes = orphanSweep.Notes;
+            Dictionary<Guid, ImmutableArray<ServiceFieldDiff>>? serviceDiffs = null;
+            var preservedServices = desiredServices.Select(service =>
+            {
+                var preserved = PreserveServiceVersion(service, snapshot, out var diffs);
+                if (!diffs.IsEmpty)
+                {
+                    (serviceDiffs ??= new Dictionary<Guid, ImmutableArray<ServiceFieldDiff>>())[service.Id] = diffs;
+                }
+
+                return preserved;
+            }).ToImmutableArray();
             var changes = BuildChangeSet(
                 snapshot,
                 desiredState.ManagedServiceIds,
                 desiredState.ManagedRouteIds,
-                desiredServices.Select(service => PreserveServiceVersion(
-                    service,
-                    snapshot)),
+                preservedServices,
                 desiredRoutes.Select(route => PreserveRouteVersion(route, snapshot)),
                 preservedSourceServiceIds,
                 preservedSourceRouteIds,
                 desiredState.ConfiguredLockServiceIds);
+            for (var index = 0; index < reports.Count; index++)
+            {
+                var report = reports[index];
+                if (report.Succeeded && report.ServiceId is { } serviceId)
+                {
+                    var diffs = serviceDiffs is not null && serviceDiffs.TryGetValue(serviceId, out var serviceFieldDiffs)
+                        ? serviceFieldDiffs
+                        : ImmutableArray<ServiceFieldDiff>.Empty;
+                    reports[index] = report with
+                    {
+                        Diffs = diffs,
+                        Decision = !snapshotServiceIds.Contains(serviceId) || !diffs.IsEmpty
+                            ? ServiceDecision.Updated
+                            : ServiceDecision.Reused
+                    };
+                }
+            }
             if (SemanticallyEqualIgnoringVersion(snapshot.Services, changes.Services) &&
                 SemanticallyEqualIgnoringVersion(snapshot.Routes, changes.Routes))
             {

@@ -32,4 +32,10 @@ public sealed record ServiceSyncReport(
     /// field is included in sync report payloads without changing existing fields.
     /// </summary>
     public string? LogDirectory { get; init; }
+
+    /// <summary>Gets the reconciliation decision for this service.</summary>
+    public ServiceDecision Decision { get; init; } = ServiceDecision.Reused;
+
+    /// <summary>Gets sanitized field-level changes to the managed service configuration.</summary>
+    public ImmutableArray<ServiceFieldDiff> Diffs { get; init; } = ImmutableArray<ServiceFieldDiff>.Empty;
 }

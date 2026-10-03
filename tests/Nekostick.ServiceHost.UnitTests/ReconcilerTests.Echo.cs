@@ -14,7 +14,7 @@ public sealed partial class ReconcilerTests
             var configurationApi = new FakeConfigurationApi(ToExtensionSettings(fixture.Settings));
             var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory);
 
-            var report = await reconciler.ReconcileAsync();
+            var report = await reconciler.ReconcileAsync("test");
 
             Assert.True(report.Succeeded);
             Assert.Null(report.WrittenConfigurationVersion);
@@ -38,10 +38,10 @@ public sealed partial class ReconcilerTests
             var supervisorApi = CountingSupervisorProxy.Create(out var supervisor);
             var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory, supervisorApi);
 
-            var firstReport = await reconciler.ReconcileAsync();
+            var firstReport = await reconciler.ReconcileAsync("test");
             var replaceCallCountAfterFirst = full.ReplaceCallCount;
             var resumeCallCountAfterFirst = supervisor.ResumeCallCount;
-            var secondReport = await reconciler.ReconcileAsync();
+            var secondReport = await reconciler.ReconcileAsync("test");
 
             Assert.True(firstReport.Succeeded);
             Assert.True(secondReport.Succeeded);

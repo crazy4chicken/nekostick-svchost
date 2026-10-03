@@ -31,6 +31,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
     private ServiceLogRecorder? _logRecorder;
     private CancellationTokenSource? _lifetimeCancellation;
     private CancellationTokenSource? _debounceCancellation;
+    private string? _debounceTrigger;
     private PeriodicTimer? _driftTimer;
     private Task? _driftTask;
     private long? _lastSelfSettledSettingsVersion;
@@ -130,6 +131,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
             _apiKeyService = apiKeyService;
             _lifetimeCancellation = new CancellationTokenSource();
             _debounceCancellation = null;
+            _debounceTrigger = null;
             _driftTimer = null;
             _driftTask = null;
             _lastSelfSettledSettingsVersion = null;
@@ -309,6 +311,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
             _logRecorder = null;
             _lifetimeCancellation = null;
             _debounceCancellation = null;
+            _debounceTrigger = null;
             _driftTimer = null;
             _driftTask = null;
             _lastSelfSettledSettingsVersion = null;
@@ -378,6 +381,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
             var report = await ReconcileTrackedAsync(
                     Array.Empty<Guid>(),
                     Array.Empty<Guid>(),
+                    "startup",
                     cancellationToken)
                 .ConfigureAwait(false);
             RecordSyncReport(report);
@@ -402,7 +406,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
                 null,
                 exception.Message)
             {
-                FailureCode = SyncErrorCode.ReconcileFailed
+                FailureCode = SyncErrorCode.ReconcileFailed,
+                Trigger = "startup"
             };
             RecordSyncReport(report);
             bridge?.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "initial-sync-failed"));

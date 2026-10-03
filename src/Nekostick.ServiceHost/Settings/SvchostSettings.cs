@@ -85,9 +85,19 @@ public sealed class ReleaseProviderSettings
     public List<string>? Mirrors { get; set; } = new();
 }
 
+/// <summary>Contains settings for reconciliation observability.</summary>
+public sealed class SvchostObservabilitySettings
+{
+    /// <summary>Gets or sets the minimum reconciliation log level.</summary>
+    [JsonPropertyName("logLevel")]
+    public string LogLevel { get; set; } = "information";
+}
+
 /// <summary>Represents the raw JSON document persisted as extension settings.</summary>
 public sealed class SvchostSettings
 {
+    private SvchostObservabilitySettings _observability = new();
+
     /// <summary>Creates an empty settings document.</summary>
     public SvchostSettings()
     {
@@ -128,6 +138,14 @@ public sealed class SvchostSettings
     public Dictionary<string, ReleaseProviderSettings>? ReleaseProviders { get; set; } =
         new(StringComparer.Ordinal);
 
+    /// <summary>Gets or sets reconciliation observability settings.</summary>
+    [JsonPropertyName("observability")]
+    public SvchostObservabilitySettings Observability
+    {
+        get => _observability;
+        set => _observability = value ?? new();
+    }
+
     /// <summary>Creates the first settings document for a host.</summary>
     public static SvchostSettings CreateInitial() => new(null, new SvchostRouteSettings());
 
@@ -151,6 +169,7 @@ public sealed class SvchostSettings
                 errors.Add("routes.webui must be a UUID v7.");
             }
         }
+
 
         if (Configs is null)
         {

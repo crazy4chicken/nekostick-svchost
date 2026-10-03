@@ -223,7 +223,10 @@ public sealed partial class Reconciler
                     null,
                     ImmutableArray<Guid>.Empty,
                     work.EntryError,
-                    SyncErrorCode.ReconcileFailed));
+                    SyncErrorCode.ReconcileFailed)
+                {
+                    Decision = ServiceDecision.Skipped
+                });
                 continue;
             }
 
@@ -238,7 +241,10 @@ public sealed partial class Reconciler
                         null,
                         ImmutableArray<Guid>.Empty,
                         error.Message,
-                        SyncErrorCode.ReconcileFailed)));
+                        SyncErrorCode.ReconcileFailed)
+                    {
+                        Decision = ServiceDecision.Skipped
+                    }));
                 continue;
             }
 
@@ -255,7 +261,10 @@ public sealed partial class Reconciler
                             null,
                             ImmutableArray<Guid>.Empty,
                             globalConflictError,
-                            SyncErrorCode.ReconcileFailed)));
+                            SyncErrorCode.ReconcileFailed)
+                        {
+                            Decision = ServiceDecision.Skipped
+                        }));
                 continue;
             }
 
@@ -305,6 +314,7 @@ public sealed partial class Reconciler
                         resolved.Error ?? "The source could not be resolved.",
                         SyncErrorCode.SourceFailed)
                     {
+                        Decision = ServiceDecision.Failed,
                         Warnings = composeService.Warnings.AddRange(resolved.Warnings),
                         NodeLocal = failedServiceId != Guid.Empty,
                         LogDirectory = logDirectory
@@ -350,6 +360,7 @@ public sealed partial class Reconciler
                         $"The template target service '{exception.Target}' could not be resolved.",
                         SyncErrorCode.ReconcileFailed)
                     {
+                        Decision = ServiceDecision.Failed,
                         Warnings = composeService.Warnings.AddRange(resolved.Warnings),
                         LogDirectory = logDirectory
                     });
@@ -460,7 +471,8 @@ public sealed partial class Reconciler
             metadata,
             now,
             now,
-            0);
+            0,
+            ownerExtensionId: Owner);
     }
 
     private static List<Guid> ResolveRouteIds(ComposeRoute? route, LockServiceEntry? previous)

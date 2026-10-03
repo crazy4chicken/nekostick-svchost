@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Nekolla.Nekostick.Contracts;
+using Nekostick.ServiceHost;
 using Nekostick.ServiceHost.Compose;
 using Nekostick.ServiceHost.Settings;
 using Nekostick.ServiceHost.Sync;
@@ -26,6 +27,7 @@ public sealed partial class SvchostApiHandler
 
         var byId = telemetry.Value.ToDictionary(snapshot => snapshot.ServiceId);
         var services = new List<object>();
+        var observedServiceIds = new HashSet<Guid>();
         foreach (var configPair in read.Settings!.Configs.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
             var config = configPair.Value;
@@ -34,6 +36,7 @@ public sealed partial class SvchostApiHandler
                 continue;
             }
 
+            var configReport = GetEffectiveReport(configPair.Key);
             var names = ServiceNames(config, TryParseCompose(config, _composeFileParser));
             foreach (var serviceName in names)
             {
@@ -43,6 +46,27 @@ public sealed partial class SvchostApiHandler
                     ? (Guid?)null
                     : lockEntry.ServiceId;
                 byId.TryGetValue(lockEntry?.ServiceId ?? Guid.Empty, out var runtime);
+                if (serviceId is { } observedServiceId && observedServiceIds.Add(observedServiceId))
+                {
+                    if (runtime is null)
+                    {
+                        ResetServiceObservation(observedServiceId);
+                    }
+                    else
+                    {
+                        RecordServiceObservation(observedServiceId, runtime.LifecycleState);
+                    }
+                }
+
+                var failureSnapshot = runtime is not null && serviceId is { } id
+                    ? _serviceFailureTracker.GetSnapshot(id)
+                    : default;
+                var serviceReport = configReport?.Services.FirstOrDefault(reportService =>
+                    string.Equals(reportService.ServiceName, serviceName, StringComparison.Ordinal));
+                var lastReconcile = ServiceReconcileProjection(configReport, serviceReport);
+                var driftCorrected = configReport is not null &&
+                    serviceReport is not null &&
+                    ExternalDriftWarning.IsDriftCorrection(configReport.Trigger, serviceReport);
                 services.Add(
                     new
                     {
@@ -54,7 +78,11 @@ public sealed partial class SvchostApiHandler
                         state = runtime?.LifecycleState.ToString(),
                         detail = runtime?.HealthState.ToString(),
                         routeIds = lockEntry?.RouteIds ?? new List<Guid>(),
-                        runtime = RuntimeProjection(runtime)
+                        source = lockEntry?.Source,
+                        runtime = RuntimeProjection(runtime),
+                        consecutiveFailures = failureSnapshot.ConsecutiveFailedObservations,
+                        lastReconcile,
+                        driftCorrected
                     });
             }
         }
@@ -139,6 +167,7 @@ public sealed partial class SvchostApiHandler
                 var stopReport = await ReconcileAndRememberAsync(
                         Array.Empty<Guid>(),
                         Array.Empty<Guid>(),
+                        "api-service-restart",
                         cancellationToken)
                     .ConfigureAwait(false);
                 if (!stopReport.Succeeded)
@@ -165,6 +194,7 @@ public sealed partial class SvchostApiHandler
                 var startReport = await ReconcileAndRememberAsync(
                         Array.Empty<Guid>(),
                         Array.Empty<Guid>(),
+                        "api-service-restart",
                         cancellationToken)
                     .ConfigureAwait(false);
                 return ActionResponse(
@@ -190,6 +220,7 @@ public sealed partial class SvchostApiHandler
             var report = await ReconcileAndRememberAsync(
                     Array.Empty<Guid>(),
                     Array.Empty<Guid>(),
+                    shouldStop ? "api-service-stop" : "api-service-start",
                     cancellationToken)
                 .ConfigureAwait(false);
             var message = shouldStop

@@ -106,7 +106,8 @@ internal sealed class FakeBridge : IExtensionHostBridge13
 
     public FakeStatusSink StatusSink { get; }
 
-    public IExtensionSupervisorApi Supervisor => null!;
+    public IExtensionSupervisorApi? SupervisorApi { get; set; }
+    public IExtensionSupervisorApi Supervisor => SupervisorApi!;
     public IExtensionRouteEvents RouteEvents => null!;
     IExtensionLogWriter IExtensionHostBridge13.LogWriter => LogWriterSink;
     public IExtensionManagementApi Management => null!;

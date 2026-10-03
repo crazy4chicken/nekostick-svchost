@@ -86,6 +86,57 @@ public sealed partial class SvchostApiHandler
             ownerExtensionId = runtime.OwnerExtensionId
         };
 
+    private static object? ServiceReconcileProjection(SyncReport? report, ServiceSyncReport? service)
+    {
+        if (report is null)
+        {
+            return null;
+        }
+
+        if (service is not null)
+        {
+            return new
+            {
+                completedAt = report.CompletedAt,
+                succeeded = service.Succeeded,
+                trigger = report.Trigger,
+                decision = service.Decision,
+                diffs = service.Diffs.IsDefaultOrEmpty
+                    ? Array.Empty<ServiceFieldDiff>()
+                    : service.Diffs.ToArray()
+            };
+        }
+
+        if (report.Succeeded || !report.Services.IsDefaultOrEmpty)
+        {
+            return null;
+        }
+
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["completedAt"] = report.CompletedAt,
+            ["succeeded"] = false,
+            ["trigger"] = report.Trigger,
+            ["decision"] = null,
+            ["diffs"] = Array.Empty<ServiceFieldDiff>()
+        };
+        if (report.Error is not null)
+        {
+            payload["error"] = report.Error;
+        }
+
+        if (report.FailureCode.HasValue)
+        {
+            var errorKind = SyncErrorKind(report.FailureCode);
+            if (errorKind is not null)
+            {
+                payload["errorKind"] = errorKind;
+            }
+        }
+
+        return payload;
+    }
+
     private static ExtensionStreamingResponse SyncResponse(SyncReport report, string configName)
     {
         if (report.ErrorCode == ConfigurationErrorCode.ConcurrencyConflict &&

@@ -15,7 +15,7 @@
 | `PUT` | `/svchost/api/configs/{name}` | `X-Api-Key` | 创建或更新配置并触发全量 reconciliation; body 为 `{"yaml":"<compose YAML>"}`. |
 | `DELETE` | `/svchost/api/configs/{name}` | `X-Api-Key` | 删除指定配置, 并触发其服务、路由及本地配置产物的清理; 清理方式按 `serviceScope` 区分, 详见下文. |
 | `POST` | `/svchost/api/configs/{name}/sync` | `X-Api-Key` | 要求该配置存在, 然后触发全量 reconciliation; 本次会读取并处理 settings 中的所有配置. |
-| `GET` | `/svchost/api/services` | `X-Api-Key` | 返回受管服务的启用状态、生命周期/健康状态及运行时信息. |
+| `GET` | `/svchost/api/services` | `X-Api-Key` | 返回受管服务的启用状态、lock source、生命周期/健康状态、运行时信息及 reconciliation 状态. |
 | `POST` | `/svchost/api/services/{config}/{service}/{action}` | `X-Api-Key` | 请求单个服务 `start`、`stop` 或 `restart`; `start`/`stop` 会持久化更新配置的 `stopped` 列表并触发全量 reconcile. `restart` 先禁用并全量 reconcile, 成功后再启用并执行第二次全量 reconcile. 生命周期变更由 Host 异步调和, 不保证请求返回时进程状态已完成切换. |
 | `GET` | `/svchost/api/configs/{config}/services/{service}/logs?file=N` | `X-Api-Key` | Read one page from a service's rotating log files. |
 | `GET` | `/svchost/api/configs/{config}/services/{service}/logs/tail?fromLine=M` | `X-Api-Key` | Replay current-file lines and stream new lines using SSE. |
@@ -37,6 +37,18 @@
 `file` is zero-based: `0` is the current/newest file, and `1` through `4` are progressively older archives. It defaults to `0` when omitted. `fileCount` reports the number of existing files; `lineCount` and `lines` describe the selected file, with lines ordered oldest to newest. An unknown configuration or service, or an unavailable file index, returns `404`.
 
 `GET /svchost/api/configs/{config}/services/{service}/logs/tail?fromLine=M` returns `Content-Type: text/event-stream`. `fromLine` is the zero-based index in the current file to replay and defaults to `0`; replay is best-effort if rotation occurs. Each line is sent as `data: {"line":"<JSON-escaped log line>"}\n\n`. The stream sends a `: ping` comment every 15 seconds and ends when the request is cancelled. If live logging is unavailable, the current-file replay is sent and the stream then ends.
+
+## Service status
+
+`GET /svchost/api/services` is read-only. Each managed-service entry includes desired state (`enabled`), lock identity (`serviceId`, `routeIds`), host-runtime fields, and the following status fields:
+
+- `source`: the full source-lock object, using the same shape as config lock responses. Depending on the source it can include `kind`, `url`, `path`, `providerKey`, `spec`, `tag`, `assetName`, `size`, `version`, `sha256`, `fetchedAt`, and other source-specific metadata; it is `null` when the service has no lock entry.
+- `consecutiveFailures`: the number of consecutive `Failed` lifecycle observations (read-path polls and post-reconcile checks), not a count of distinct failures. The counter resets on any other observed lifecycle state and is cleared when the current runtime snapshot is absent; it is in memory and resets when the extension restarts. Its value scales with poll and reconcile frequency. It is `0` when the current runtime snapshot is absent.
+- `lastReconcile`: `null` when there is no applicable cached report. A matching service entry projects `{ "completedAt", "succeeded", "trigger", "decision", "diffs" }`, where `succeeded` is the service entry's outcome and `diffs` contains `{ "field", "oldValue", "newValue" }` values (environment values are already masked). If the effective report is a failed whole-run report with an empty service list, it instead projects `{ "completedAt", "succeeded": false, "trigger", "decision": null, "diffs": [], "error?", "errorKind?" }`.
+- `driftCorrected`: `true` only when the matching service decision is `updated`, the trigger is `startup` or `drift-host-version`, and `diffs` is non-empty; otherwise `false`.
+
+The host runtime API exposes lifecycle state and health but no failure count or failure reason. A `Failed` lifecycle state together with `consecutiveFailures` is therefore an anomaly signal, not a diagnosis. `lastReconcile` comes from the handler's in-memory cache and is `null` until an applicable service or run-level failure report is recorded; it resets on extension restart.
+Read-path and post-reconcile supervisor reads are fetched before entering the tracker lock, so concurrent observations may apply out of order; the count is advisory.
 
 `PUT /svchost/api/configs/{name}` 会校验并保存单份 Compose YAML, 但不会预先检查它与其他配置的 global 服务名冲突. 若保存后发现冲突, 本次请求仍返回 `200` 和 `succeeded: false` 的同步报告; 配置已写入, 冲突会继续阻断后续 reconciliation, 直到修复.
 

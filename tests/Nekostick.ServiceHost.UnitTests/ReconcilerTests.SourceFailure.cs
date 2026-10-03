@@ -52,7 +52,7 @@ public sealed partial class ReconcilerTests
                 full,
                 dataDirectory);
 
-            var report = await reconciler.ReconcileAsync();
+            var report = await reconciler.ReconcileAsync("test");
 
             Assert.False(report.Succeeded);
             var serviceReport = Assert.Single(report.Services);
@@ -60,6 +60,7 @@ public sealed partial class ReconcilerTests
             Assert.Equal(SyncErrorCode.SourceFailed, serviceReport.FailureCode);
             Assert.Equal(serviceId, serviceReport.ServiceId);
             Assert.True(serviceReport.NodeLocal);
+            Assert.Equal(ServiceDecision.Preserved, serviceReport.Decision);
             Assert.Equal([routeId], serviceReport.RouteIds.ToArray());
             Assert.Equal(0, full.ReplaceCallCount);
             Assert.Contains(full.Snapshot.Services, candidate => candidate.Id == serviceId);
@@ -97,7 +98,7 @@ public sealed partial class ReconcilerTests
                 full,
                 root);
 
-            var report = await reconciler.ReconcileAsync();
+            var report = await reconciler.ReconcileAsync("test");
 
             Assert.False(report.Succeeded);
             var serviceReport = Assert.Single(report.Services);
@@ -105,6 +106,7 @@ public sealed partial class ReconcilerTests
             Assert.Equal(SyncErrorCode.SourceFailed, serviceReport.FailureCode);
             Assert.Null(serviceReport.ServiceId);
             Assert.False(serviceReport.NodeLocal);
+            Assert.Equal(ServiceDecision.Failed, serviceReport.Decision);
             Assert.Empty(full.Snapshot.Services);
             Assert.Empty(full.Snapshot.Routes);
             Assert.Equal(0, full.ReplaceCallCount);

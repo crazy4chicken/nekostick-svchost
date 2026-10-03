@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Text.Json;
 using Nekolla.Nekostick.Contracts;
 
@@ -83,15 +84,23 @@ public sealed partial class Reconciler
 
     private static ServiceConfiguration PreserveServiceVersion(
         ServiceConfiguration desired,
-        HostConfigurationSnapshot snapshot)
+        HostConfigurationSnapshot snapshot,
+        out ImmutableArray<ServiceFieldDiff> diffs)
     {
         var existing = snapshot.Services.FirstOrDefault(service => service.Id == desired.Id);
         if (existing is null)
         {
+            diffs = ImmutableArray<ServiceFieldDiff>.Empty;
             return desired;
         }
 
-        var preserved = new ServiceConfiguration(
+        diffs = GetServiceFieldDiffs(existing, desired);
+        if (diffs.IsEmpty)
+        {
+            return existing;
+        }
+
+        return new ServiceConfiguration(
             desired.Id,
             desired.Enabled,
             desired.FileName,
@@ -104,7 +113,109 @@ public sealed partial class Reconciler
             existing.CreatedAt,
             DateTimeOffset.UtcNow,
             existing.Version);
-        return SemanticallyEqualIgnoringVersion(preserved, existing) ? existing : preserved;
+    }
+
+    private static ImmutableArray<ServiceFieldDiff> GetServiceFieldDiffs(
+        ServiceConfiguration existing,
+        ServiceConfiguration desired)
+    {
+        ImmutableArray<ServiceFieldDiff>.Builder? diffs = null;
+        if (existing.Enabled != desired.Enabled)
+        {
+            AddServiceFieldDiff(ref diffs, "enabled", existing.Enabled, desired.Enabled);
+        }
+        if (!string.Equals(existing.FileName, desired.FileName, StringComparison.Ordinal))
+        {
+            AddServiceFieldDiff(ref diffs, "fileName", existing.FileName, desired.FileName);
+        }
+        if (!existing.ArgumentList.SequenceEqual(desired.ArgumentList))
+        {
+            AddServiceFieldDiff(
+                ref diffs,
+                "args",
+                JsonSerializer.Serialize(existing.ArgumentList),
+                JsonSerializer.Serialize(desired.ArgumentList));
+        }
+        if (!string.Equals(existing.WorkingDirectory, desired.WorkingDirectory, StringComparison.Ordinal))
+        {
+            AddServiceFieldDiff(ref diffs, "workingDirectory", existing.WorkingDirectory, desired.WorkingDirectory);
+        }
+
+        SortedSet<string>? changedEnvironmentKeys = null;
+        foreach (var pair in existing.Environment)
+        {
+            if (!desired.Environment.TryGetValue(pair.Key, out var newValue) ||
+                !string.Equals(pair.Value, newValue, StringComparison.Ordinal))
+            {
+                (changedEnvironmentKeys ??= new SortedSet<string>(StringComparer.Ordinal)).Add(pair.Key);
+            }
+        }
+        foreach (var pair in desired.Environment)
+        {
+            if (!existing.Environment.ContainsKey(pair.Key))
+            {
+                (changedEnvironmentKeys ??= new SortedSet<string>(StringComparer.Ordinal)).Add(pair.Key);
+            }
+        }
+        if (changedEnvironmentKeys is not null)
+        {
+            foreach (var key in changedEnvironmentKeys)
+            {
+                AddServiceFieldDiff(
+                    ref diffs,
+                    $"env.{key}",
+                    existing.Environment.ContainsKey(key) ? "***" : null,
+                    desired.Environment.ContainsKey(key) ? "***" : null);
+            }
+        }
+
+        if (existing.StartMode != desired.StartMode)
+        {
+            AddServiceFieldDiff(ref diffs, "startMode", existing.StartMode, desired.StartMode);
+        }
+        if (existing.RestartPolicy != desired.RestartPolicy)
+        {
+            AddServiceFieldDiff(ref diffs, "restartPolicy", existing.RestartPolicy, desired.RestartPolicy);
+        }
+        if (existing.HealthCheck.Type != desired.HealthCheck.Type)
+        {
+            AddServiceFieldDiff(ref diffs, "healthCheck.type", existing.HealthCheck.Type, desired.HealthCheck.Type);
+        }
+        if (!string.Equals(existing.HealthCheck.HttpPath, desired.HealthCheck.HttpPath, StringComparison.Ordinal))
+        {
+            AddServiceFieldDiff(ref diffs, "healthCheck.httpPath", existing.HealthCheck.HttpPath, desired.HealthCheck.HttpPath);
+        }
+        if (existing.HealthCheck.Timeout != desired.HealthCheck.Timeout)
+        {
+            AddServiceFieldDiff(ref diffs, "healthCheck.timeout", existing.HealthCheck.Timeout, desired.HealthCheck.Timeout);
+        }
+
+        return diffs?.ToImmutable() ?? ImmutableArray<ServiceFieldDiff>.Empty;
+    }
+
+    private static void AddServiceFieldDiff(
+        ref ImmutableArray<ServiceFieldDiff>.Builder? diffs,
+        string field,
+        object? oldValue,
+        object? newValue)
+    {
+        (diffs ??= ImmutableArray.CreateBuilder<ServiceFieldDiff>()).Add(new ServiceFieldDiff(
+            field,
+            FormatServiceFieldValue(oldValue),
+            FormatServiceFieldValue(newValue)));
+    }
+
+    private static string? FormatServiceFieldValue(object? value)
+    {
+        var text = value switch
+        {
+            null => null,
+            IFormattable formatted => formatted.ToString(null, CultureInfo.InvariantCulture),
+            _ => value.ToString()
+        };
+        return text is { Length: > 120 }
+            ? string.Concat(text.AsSpan(0, 117), "...".AsSpan())
+            : text;
     }
 
     private static RouteConfiguration PreserveRouteVersion(
@@ -135,7 +246,8 @@ public sealed partial class Reconciler
             desired.MaxRequestHeaderBytes,
             desired.MaxConcurrentRequests,
             desired.RequestReadTimeout,
-            desired.ProxyRetries);
+            desired.ProxyRetries,
+            ownerExtensionId: desired.OwnerExtensionId);
         return SemanticallyEqualIgnoringVersion(preserved, existing) ? existing : preserved;
     }
 
@@ -212,7 +324,8 @@ public sealed partial class Reconciler
         ForwardingEqual(left.Forwarding, right.Forwarding) &&
         HeaderRewritesEqual(left.RequestHeaderRewrites, right.RequestHeaderRewrites) &&
         HeaderRewritesEqual(left.ResponseHeaderRewrites, right.ResponseHeaderRewrites) &&
-        string.Equals(left.MetadataJson, right.MetadataJson, StringComparison.Ordinal) &&
+        MetadataJsonEqual(left.MetadataJson, right.MetadataJson) &&
+        string.Equals(left.OwnerExtensionId, right.OwnerExtensionId, StringComparison.Ordinal) &&
         left.CreatedAt == right.CreatedAt &&
         Equals(left.ClientIpRatePolicy, right.ClientIpRatePolicy) &&
         left.MaxRequestBodyBytes == right.MaxRequestBodyBytes &&
@@ -240,8 +353,71 @@ public sealed partial class Reconciler
         RouteMatcherConfiguration right) =>
         left.Type == right.Type &&
         string.Equals(left.Pattern, right.Pattern, StringComparison.Ordinal) &&
-        left.HostPatterns.SequenceEqual(right.HostPatterns) &&
-        left.Methods.SequenceEqual(right.Methods);
+        StringSetsEqual(left.HostPatterns, right.HostPatterns, StringComparison.OrdinalIgnoreCase) &&
+        StringSetsEqual(left.Methods, right.Methods, StringComparison.Ordinal);
+
+    private static bool StringSetsEqual(
+        ImmutableArray<string> left,
+        ImmutableArray<string> right,
+        StringComparison comparison)
+    {
+        foreach (var value in left)
+        {
+            var found = false;
+            foreach (var candidate in right)
+            {
+                if (string.Equals(value, candidate, comparison))
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+            {
+                return false;
+            }
+        }
+
+        foreach (var value in right)
+        {
+            var found = false;
+            foreach (var candidate in left)
+            {
+                if (string.Equals(value, candidate, comparison))
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool MetadataJsonEqual(string? left, string? right)
+    {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
+        }
+
+        try
+        {
+            using var leftDocument = JsonDocument.Parse(left);
+            using var rightDocument = JsonDocument.Parse(right);
+            return JsonElement.DeepEquals(leftDocument.RootElement, rightDocument.RootElement);
+        }
+        catch (JsonException)
+        {
+            return string.Equals(left, right, StringComparison.Ordinal);
+        }
+    }
 
     private static bool TargetsEqual(
         RouteTargetConfiguration left,

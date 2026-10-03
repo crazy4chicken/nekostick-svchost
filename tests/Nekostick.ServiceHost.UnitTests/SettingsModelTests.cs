@@ -94,6 +94,7 @@ public sealed class SettingsModelTests
     public async Task SettingsStore_roundtrips_settings_with_null_api_key()
     {
         var settings = CreateSettings();
+        settings.Observability.LogLevel = "Warning";
         settings.ReleaseProviders = new Dictionary<string, ReleaseProviderSettings>(StringComparer.Ordinal)
         {
             ["github"] = new ReleaseProviderSettings { Mirrors = ["https://ghproxy.net/"] }
@@ -149,8 +150,10 @@ public sealed class SettingsModelTests
         Assert.Contains("\"apiKey\":null", configurationApi.WrittenSettings.Single().SettingsJson, StringComparison.Ordinal);
         Assert.Contains("\"releaseProviders\"", configurationApi.WrittenSettings.Single().SettingsJson, StringComparison.Ordinal);
         Assert.Contains("\"mirrors\":[\"https://ghproxy.net/\"]", configurationApi.WrittenSettings.Single().SettingsJson, StringComparison.Ordinal);
+        Assert.Contains("\"observability\":{\"logLevel\":\"Warning\"}", configurationApi.WrittenSettings.Single().SettingsJson, StringComparison.Ordinal);
         Assert.Equal("https://ghproxy.net/", read.Value!.Settings!.ReleaseProviders!["github"].Mirrors!.Single());
         Assert.Null(read.Value!.Settings!.ApiKey);
+        Assert.Equal("Warning", read.Value.Settings.Observability.LogLevel);
         Assert.Equal(settings.Routes.Api, read.Value.Settings.Routes.Api);
         Assert.Equal(settings.Configs["demo"].Yaml, read.Value.Settings.Configs["demo"].Yaml);
         Assert.Equal(["api"], read.Value.Settings.Configs["demo"].Stopped);
@@ -163,6 +166,43 @@ public sealed class SettingsModelTests
         Assert.Equal("1.2.3", releaseLock.Version);
         Assert.Equal("api_v1.2.3_x64.zip", releaseLock.AssetName);
         Assert.Null(releaseLock.Sha256);
+    }
+
+    [Theory]
+    [InlineData("not-a-level")]
+    [InlineData(null)]
+    public async Task SettingsStore_roundtrips_unrecognized_observability_log_levels(string? logLevel)
+    {
+        var settings = CreateSettings();
+        settings.Observability.LogLevel = logLevel!;
+        var configurationApi = new FakeConfigurationApi();
+        var store = new SettingsStore(configurationApi);
+
+        var write = await store.WriteSettingsAsync(0, settings);
+        var read = await store.ReadSettingsAsync();
+
+        Assert.True(write.IsSuccess);
+        Assert.True(read.IsSuccess);
+        Assert.Equal(logLevel, read.Value!.Settings!.Observability.LogLevel);
+    }
+
+    [Fact]
+    public async Task SettingsStore_roundtrips_explicit_null_observability_as_default()
+    {
+        var settings = CreateSettings();
+        var rawJson = "{\"apiKey\":null,\"routes\":{\"api\":\"" + settings.Routes.Api +
+                      "\",\"webui\":\"" + settings.Routes.Webui +
+                      "\"},\"observability\":null,\"configs\":{}}";
+        var configurationApi = new FakeConfigurationApi();
+        var store = new SettingsStore(configurationApi);
+
+        var write = await store.WriteRawSettingsAsync(0, rawJson);
+        var read = await store.ReadSettingsAsync();
+
+        Assert.True(write.IsSuccess);
+        Assert.True(read.IsSuccess);
+        Assert.Equal("information", read.Value!.Settings!.Observability.LogLevel);
+        Assert.Equal(rawJson, read.Value.RawJson);
     }
 
     [Theory]
@@ -185,6 +225,7 @@ public sealed class SettingsModelTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal(includeNullProperty, result.Value!.Settings!.ReleaseProviders is null);
+        Assert.Equal("information", result.Value!.Settings!.Observability.LogLevel);
     }
 
     private static SvchostSettings CreateSettings() =>
