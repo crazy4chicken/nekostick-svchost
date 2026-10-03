@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { NButton, NIcon, NResult, NSpin, NTabPane, NTabs, NTag } from 'naive-ui'
-import { KeyOutline, RefreshOutline } from '@vicons/ionicons5'
+import { NButton, NButtonGroup, NIcon, NResult, NSpin, NTabPane, NTabs, NTag, NTooltip } from 'naive-ui'
+import { DesktopOutline, MoonOutline, RefreshOutline, SunnyOutline } from '@vicons/ionicons5'
 import { onMounted, provide, ref } from 'vue'
 import { ApiError, api, clearStoredKey, getStoredKey, setStoredKey } from '../api/client'
 import type { StatusResponse } from '../api/types'
+import { setThemeMode, themeMode, type ThemeMode } from '../theme'
 import BootstrapSetup from './BootstrapSetup.vue'
 import ConfigList from './ConfigList.vue'
 import KeyGate from './KeyGate.vue'
@@ -73,24 +74,46 @@ async function enterKey(key: string) {
   }
 }
 
+const themeOptions: { mode: ThemeMode; label: string; icon: typeof SunnyOutline }[] = [
+  { mode: 'light', label: 'Light theme', icon: SunnyOutline },
+  { mode: 'dark', label: 'Dark theme', icon: MoonOutline },
+  { mode: 'system', label: 'Follow system theme', icon: DesktopOutline },
+]
+
 onMounted(boot)
 </script>
 
 <template>
   <div class="shell">
     <header class="shell-header">
-      <div class="shell-title">
-        <n-icon size="20"><KeyOutline /></n-icon>
-        <span>nekostick svchost</span>
-        <n-tag v-if="status" size="tiny" :bordered="false" type="info">
-          {{ status.version }}
-        </n-tag>
-      </div>
-      <div class="header-actions">
-        <n-button v-if="phase === 'main'" size="small" quaternary @click="boot">
-          <template #icon><n-icon><RefreshOutline /></n-icon></template>
-          Re-check status
-        </n-button>
+      <div class="shell-header-inner">
+        <div class="shell-title">
+          <span class="brand-mark" />
+          <span class="brand-name">nekostick <em>svchost</em></span>
+          <n-tag v-if="status" size="tiny" :bordered="false" class="version-tag">
+            v{{ status.version }}
+          </n-tag>
+        </div>
+        <div class="header-actions">
+          <n-button-group size="small" class="theme-switch">
+            <n-tooltip v-for="option in themeOptions" :key="option.mode" :delay="300">
+              <template #trigger>
+                <n-button
+                  quaternary
+                  :type="themeMode === option.mode ? 'primary' : 'default'"
+                  @click="setThemeMode(option.mode)"
+                >
+                  <template #icon><n-icon><component :is="option.icon" /></n-icon></template>
+                </n-button>
+              </template>
+              {{ option.label }}
+            </n-tooltip>
+          </n-button-group>
+          <n-button v-if="phase === 'main'" size="small" quaternary @click="boot">
+            <template #icon><n-icon><RefreshOutline /></n-icon></template>
+            Re-check status
+          </n-button>
+        </div>
       </div>
     </header>
 
@@ -113,8 +136,8 @@ onMounted(boot)
       <KeyGate v-else-if="phase === 'gate'" :error="gateError" :loading="gatePending" @submit="enterKey" />
 
       <template v-else>
-        <n-tabs v-model:value="activeTab" type="segment" class="tabs">
-            <n-tab-pane name="services" tab="Services">
+        <n-tabs v-model:value="activeTab" type="line" class="tabs" animated>
+          <n-tab-pane name="services" tab="Services">
             <ServicesDashboard />
           </n-tab-pane>
           <n-tab-pane name="configs" tab="Configs">
@@ -131,37 +154,71 @@ onMounted(boot)
 
 <style scoped>
 .shell {
-  max-width: 1080px;
-  margin: 0 auto;
-  padding: 0 20px 48px;
   min-height: 100%;
 }
 .shell-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.18);
+  background: rgba(128, 128, 128, 0.06);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.shell-header-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 24px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 0;
 }
 .shell-title {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 17px;
-  font-weight: 600;
+  gap: 10px;
+}
+.brand-mark {
+  width: 14px;
+  height: 14px;
+  border-radius: 5px;
+  background: linear-gradient(135deg, #47cd9a, #1d9e6d);
+  box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.18);
+}
+.brand-name {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+.brand-name em {
+  font-style: normal;
+  opacity: 0.55;
+  font-weight: 550;
+}
+.version-tag {
+  margin-left: 2px;
+  opacity: 0.75;
 }
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+}
+.theme-switch {
+  opacity: 0.9;
 }
 .shell-body {
   position: relative;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 8px 24px 64px;
 }
 .centered {
   display: block;
   margin: 120px auto;
 }
 .tabs {
-  margin-top: 4px;
+  margin-top: 8px;
 }
 </style>

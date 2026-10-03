@@ -17,6 +17,7 @@ import { AddOutline, CreateOutline, DocumentTextOutline, SyncOutline, TrashOutli
 import { inject, onMounted, ref } from 'vue'
 import { ApiError, api, syncReportEntries } from '../api/client'
 import type { ConfigSummary } from '../api/types'
+import { absoluteTime, relativeTime } from '../format'
 import ConfigEditorDrawer from './ConfigEditorDrawer.vue'
 import LogViewerModal from './LogViewerModal.vue'
 import SyncReportView from './SyncReportView.vue'
@@ -107,6 +108,13 @@ function lockCount(config: ConfigSummary): number {
 function lastSyncOk(config: ConfigSummary): boolean | null {
   return config.lastSync ? config.lastSync.succeeded : null
 }
+function syncLabel(config: ConfigSummary): string {
+  const ok = lastSyncOk(config)
+  if (ok === null) return 'never'
+  const time = relativeTime(config.lastSync?.completedAt)
+  return time === '—' ? (ok ? 'ok' : 'failed') : time
+}
+
 
 function openReport(config: ConfigSummary) {
   if (config.lastSync) viewingReport.value = config
@@ -188,21 +196,22 @@ onMounted(load)
           <td>{{ config.services.map((s) => s.name).join(', ') || '—' }}</td>
           <td>{{ lockCount(config) }}</td>
           <td>
-            <n-button
-              v-if="lastSyncOk(config) !== null"
-              quaternary
-              size="tiny"
-              @click="openReport(config)"
-            >
-              <n-tag
-                size="tiny"
-                :type="lastSyncOk(config) ? 'success' : 'error'"
-                :bordered="false"
-              >
-                {{ lastSyncOk(config) ? 'ok' : 'failed' }}
-              </n-tag>
-            </n-button>
-            <n-tag v-else size="tiny" :bordered="false">never</n-tag>
+            <template v-if="config.lastSync">
+              <n-tooltip :delay="300">
+                <template #trigger>
+                  <n-button quaternary size="tiny" class="sync-cell" @click="openReport(config)">
+                    <span
+                      class="sync-dot"
+                      :data-ok="lastSyncOk(config) ? '1' : '0'"
+                    />
+                    <span>{{ syncLabel(config) }}</span>
+                  </n-button>
+                </template>
+                {{ absoluteTime(config.lastSync.completedAt) }} —
+                {{ lastSyncOk(config) ? 'sync succeeded' : 'sync failed, click for report' }}
+              </n-tooltip>
+            </template>
+            <n-text v-else depth="3">never</n-text>
           </td>
           <td class="actions-col">
             <n-button size="tiny" quaternary @click="openLogs(config)">
@@ -262,7 +271,7 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 12px 0;
+  margin: 16px 0 20px;
 }
 .centered {
   display: block;
@@ -273,6 +282,7 @@ onMounted(load)
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+  font-weight: 550;
 }
 .config-badges {
   display: inline-flex;
@@ -280,8 +290,27 @@ onMounted(load)
   flex-wrap: wrap;
   gap: 4px;
 }
+.sync-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sync-dot[data-ok='1'] {
+  background: #3ecf8e;
+  box-shadow: 0 0 6px rgba(62, 207, 142, 0.5);
+}
+.sync-dot[data-ok='0'] {
+  background: #e05d6f;
+  box-shadow: 0 0 6px rgba(224, 93, 111, 0.45);
+}
 .mono {
-  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 .actions-col {
   white-space: nowrap;

@@ -61,6 +61,7 @@ export interface SyncReport {
   name?: string
   succeeded: boolean
   services: ServiceSyncResult[]
+  completedAt?: string
   error?: string
   errorKind?: string
 }
@@ -95,6 +96,22 @@ export interface ConfigDetail {
   lock: ConfigLockSummary | null
 }
 
+export interface ServiceFieldDiff {
+  field: string
+  oldValue?: string | null
+  newValue?: string | null
+}
+
+export interface ServiceLastReconcile {
+  completedAt?: string
+  succeeded: boolean
+  trigger?: string
+  decision?: string | null
+  diffs?: ServiceFieldDiff[]
+  error?: string
+  errorKind?: string
+}
+
 export interface ManagedService {
   config: string
   service: string
@@ -102,6 +119,9 @@ export interface ManagedService {
   enabled?: boolean
   state?: string
   detail?: string
+  consecutiveFailures?: number
+  lastReconcile?: ServiceLastReconcile | null
+  driftCorrected?: boolean
 }
 
 export interface LogPage {
