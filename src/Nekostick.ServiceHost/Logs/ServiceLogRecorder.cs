@@ -1,15 +1,15 @@
+using System.Collections.Immutable;
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Nekolla.Nekostick.Contracts;
 
 namespace Nekostick.ServiceHost.Logs;
 
-/// <summary>Subscribes to managed service output and serializes it through one logging pump.</summary>
+/// <summary>Subscribes to managed service log feeds and serializes them through one logging pump.</summary>
 public sealed class ServiceLogRecorder : IDisposable
 {
     private const int ChannelCapacity = 4096;
     private static readonly TimeSpan DisposeDrainTimeout = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan ImmediateResubscribeCooldown = TimeSpan.FromSeconds(2);
 
     private readonly IExtensionServiceOutputApi? _outputApi;
     private readonly IExtensionLogger? _logger;
@@ -26,7 +26,7 @@ public sealed class ServiceLogRecorder : IDisposable
             SingleWriter = false,
             AllowSynchronousContinuations = false
         });
-    private readonly ConcurrentQueue<ServiceOutputSink> _overflowSinks = new();
+    private readonly ConcurrentQueue<ServiceLogSink> _overflowSinks = new();
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly Dictionary<Guid, WriterState> _writers = new();
@@ -126,7 +126,7 @@ public sealed class ServiceLogRecorder : IDisposable
                 foreach (var target in _targets.Values)
                 {
                     target.Deactivate();
-                    DisposeSubscriptions(target);
+                    DisposeSubscription(target.Slot);
                     EnqueueControlEvent(new PumpEvent(PumpEventKind.RemoveTarget, target));
                 }
 
@@ -192,18 +192,9 @@ public sealed class ServiceLogRecorder : IDisposable
                 _targets.Add(target.ServiceId, state);
             }
 
-            if (!state.Stdout.IsOpen)
+            if (!state.Slot.IsOpen)
             {
-                Subscribe(state, state.Stdout, ExtensionServiceOutputStream.Stdout);
-                if (_featureDisabled || Volatile.Read(ref _disposeRequested) != 0)
-                {
-                    return;
-                }
-            }
-
-            if (!state.Stderr.IsOpen)
-            {
-                Subscribe(state, state.Stderr, ExtensionServiceOutputStream.Stderr);
+                Subscribe(state);
                 if (_featureDisabled || Volatile.Read(ref _disposeRequested) != 0)
                 {
                     return;
@@ -298,68 +289,84 @@ public sealed class ServiceLogRecorder : IDisposable
         }
     }
 
-    private void Subscribe(
-        TargetState target,
-        SubscriptionSlot slot,
-        ExtensionServiceOutputStream stream)
+    private void Subscribe(TargetState target)
     {
-        DisposeSubscription(slot);
-        var generation = slot.BeginSubscription();
-        var sink = new ServiceOutputSink(this, target, slot, stream, generation);
+        DisposeSubscription(target.Slot);
+        var generation = target.Slot.BeginSubscription();
+        var sink = new ServiceLogSink(this, target, target.Slot, generation);
 
         try
         {
-            SubscribeAsync(target, slot, stream, generation, sink).GetAwaiter().GetResult();
+            SubscribeAsync(target, sink, generation).GetAwaiter().GetResult();
+        }
+        catch (MissingMethodException)
+        {
+            // Host contracts predate the ordered log feed (pre-1.4.0-preview.6);
+            // degrade to no recording instead of failing every reconcile tick.
+            DisableFeature("service-output-incompatible");
         }
         catch
         {
-            slot.Subscription = null;
+            target.Slot.Subscription = null;
         }
     }
 
-    private async Task SubscribeAsync(
-        TargetState target,
-        SubscriptionSlot slot,
-        ExtensionServiceOutputStream stream,
-        int generation,
-        ServiceOutputSink sink)
+    private async Task SubscribeAsync(TargetState target, ServiceLogSink sink, int generation)
     {
-        var result = await _outputApi!.SubscribeAsync(
-            target.Target.ServiceId,
-            stream,
-            sink,
-            _lifetimeCancellation.Token).ConfigureAwait(false);
-
-        if (Volatile.Read(ref _disposeRequested) != 0 || !target.IsActive)
+        // Resume after the last processed sequence when possible; an InvalidCursor
+        // response means the replay window moved past it, so retry once from latest.
+        for (var attempt = 0; attempt < 2; attempt++)
         {
+            var cursor = target.LastSequence >= 0 ? target.LastSequence : (long?)null;
+            var result = await _outputApi!.SubscribeAsync(
+                target.Target.ServiceId,
+                sink,
+                cursor,
+                _lifetimeCancellation.Token).ConfigureAwait(false);
+
+            if (Volatile.Read(ref _disposeRequested) != 0 || !target.IsActive)
+            {
+                DisposeHandle(result.Subscription);
+                return;
+            }
+
+            var code = result.Code.ToString();
+            if (string.Equals(code, "Unsupported", StringComparison.Ordinal))
+            {
+                DisposeHandle(result.Subscription);
+                DisableFeature("service-output-unsupported");
+                return;
+            }
+
+            if (string.Equals(code, "InvalidCursor", StringComparison.Ordinal) && cursor.HasValue)
+            {
+                DisposeHandle(result.Subscription);
+                target.ResetSequence();
+                _ = EnqueueMarkerEvent(new PumpEvent(
+                    PumpEventKind.Marker,
+                    target,
+                    MarkerText: "log history no longer available; resuming at latest"));
+                continue;
+            }
+
+            if (string.Equals(code, "Subscribed", StringComparison.Ordinal) && result.Subscription is not null)
+            {
+                target.Slot.Subscription = result.Subscription;
+                target.Slot.MarkOpened(generation);
+                _ = EnqueueMarkerEvent(new PumpEvent(
+                    PumpEventKind.Marker,
+                    target,
+                    MarkerText: "service log feed attached"));
+                return;
+            }
+
             DisposeHandle(result.Subscription);
+            target.Slot.Subscription = null;
             return;
         }
-
-        var code = result.Code.ToString();
-        if (string.Equals(code, "Unsupported", StringComparison.Ordinal))
-        {
-            DisposeHandle(result.Subscription);
-            DisableFeature();
-            return;
-        }
-
-        if (string.Equals(code, "Opened", StringComparison.Ordinal) && result.Subscription is not null)
-        {
-            slot.Subscription = result.Subscription;
-            slot.MarkOpened(generation);
-            _ = EnqueueMarkerEvent(new PumpEvent(
-                PumpEventKind.Marker,
-                target,
-                MarkerText: $"output stream attached ({GetStreamName(stream)})"));
-            return;
-        }
-
-        DisposeHandle(result.Subscription);
-        slot.Subscription = null;
     }
 
-    private void DisableFeature()
+    private void DisableFeature(string reason)
     {
         _featureDisabled = true;
         if (!_unsupportedLogged)
@@ -367,7 +374,7 @@ public sealed class ServiceLogRecorder : IDisposable
             _unsupportedLogged = true;
             try
             {
-                _logger?.Report(ExtensionLogLevel.Warning, "service-output-unsupported");
+                _logger?.Report(ExtensionLogLevel.Warning, reason);
             }
             catch
             {
@@ -383,15 +390,9 @@ public sealed class ServiceLogRecorder : IDisposable
     private void RemoveTarget(TargetState target)
     {
         target.Deactivate();
-        DisposeSubscriptions(target);
+        DisposeSubscription(target.Slot);
         _targets.Remove(target.Target.ServiceId);
         EnqueueControlEvent(new PumpEvent(PumpEventKind.RemoveTarget, target));
-    }
-
-    private static void DisposeSubscriptions(TargetState target)
-    {
-        DisposeSubscription(target.Stdout);
-        DisposeSubscription(target.Stderr);
     }
 
     private static void DisposeSubscription(SubscriptionSlot slot)
@@ -401,7 +402,7 @@ public sealed class ServiceLogRecorder : IDisposable
         DisposeHandle(subscription);
     }
 
-    private static void DisposeHandle(IExtensionServiceOutputSubscription? subscription)
+    private static void DisposeHandle(IExtensionServiceLogSubscription? subscription)
     {
         if (subscription is null)
         {
@@ -474,7 +475,7 @@ public sealed class ServiceLogRecorder : IDisposable
         }
     }
 
-    private void RecordOverflow(ServiceOutputSink sink, long droppedByteCount)
+    private void RecordOverflow(ServiceLogSink sink, long droppedByteCount)
     {
         if (droppedByteCount > 0)
         {
@@ -484,14 +485,13 @@ public sealed class ServiceLogRecorder : IDisposable
         EnqueueOverflowSink(sink);
     }
 
-    private void RecordOverflowCompletion(ServiceOutputSink sink, ExtensionServiceOutputCompletionReason reason)
+    private void RecordOverflowCompletion(ServiceLogSink sink)
     {
-        Volatile.Write(ref sink.PendingCompletionReason, (int)reason);
         Volatile.Write(ref sink.PendingCompletion, 1);
         EnqueueOverflowSink(sink);
     }
 
-    private void EnqueueOverflowSink(ServiceOutputSink sink)
+    private void EnqueueOverflowSink(ServiceLogSink sink)
     {
         if (Volatile.Read(ref _disposeRequested) != 0 || !sink.Target.IsActive)
         {
@@ -592,8 +592,6 @@ public sealed class ServiceLogRecorder : IDisposable
             didWork = true;
             var droppedByteCount = Interlocked.Exchange(ref sink.PendingDroppedBytes, 0);
             var hasCompletion = Interlocked.Exchange(ref sink.PendingCompletion, 0) != 0;
-            var completionReason = (ExtensionServiceOutputCompletionReason)Volatile.Read(
-                ref sink.PendingCompletionReason);
             Interlocked.Exchange(ref sink.OverflowQueued, 0);
 
             if (droppedByteCount > 0 && !sink.Target.IsRemoved)
@@ -603,7 +601,7 @@ public sealed class ServiceLogRecorder : IDisposable
 
             if (hasCompletion)
             {
-                ProcessCompletion(sink.Target, sink.Slot, sink.Generation, completionReason);
+                ProcessCompletion(sink.Target, sink.Slot, sink.Generation);
             }
 
             if (sink.HasPendingEvents)
@@ -622,12 +620,12 @@ public sealed class ServiceLogRecorder : IDisposable
             switch (pumpEvent.Kind)
             {
                 case PumpEventKind.Chunk:
-                    if (!pumpEvent.Target.IsRemoved && pumpEvent.Data is not null)
+                    if (!pumpEvent.Target.IsRemoved && !pumpEvent.Data.IsDefaultOrEmpty)
                     {
                         GetOrCreateWriter(pumpEvent.Target)?.Append(
                             pumpEvent.Stream,
                             pumpEvent.Timestamp,
-                            pumpEvent.Data);
+                            pumpEvent.Data.AsSpan());
                     }
 
                     break;
@@ -649,8 +647,7 @@ public sealed class ServiceLogRecorder : IDisposable
                     ProcessCompletion(
                         pumpEvent.Target,
                         pumpEvent.Sink!.Slot,
-                        pumpEvent.Sink.Generation,
-                        pumpEvent.CompletionReason);
+                        pumpEvent.Sink.Generation);
                     break;
                 case PumpEventKind.UpdateLiveLines:
                     UpdateWriterLineHandler(pumpEvent.Target);
@@ -665,62 +662,18 @@ public sealed class ServiceLogRecorder : IDisposable
         }
     }
 
-    private void ProcessCompletion(
-        TargetState target,
-        SubscriptionSlot slot,
-        int generation,
-        ExtensionServiceOutputCompletionReason reason)
+    private void ProcessCompletion(TargetState target, SubscriptionSlot slot, int generation)
     {
-        if (target.IsRemoved || !slot.MarkCompleted(generation))
+        // The feed spans process generations, so completion only detaches the
+        // subscription; SyncTargets re-subscribes (with cursor resume) on the
+        // next reconcile pass if the target is still desired.
+        if (target.IsRemoved)
         {
             return;
         }
 
-        var stream = GetStream(target, slot);
-        var writer = GetOrCreateWriter(target);
-        writer?.FlushPartial();
-        writer?.AppendMarker(
-            $"output stream ended: {GetCompletionReasonName(reason)} ({GetStreamName(stream)})");
-
-        if (reason == ExtensionServiceOutputCompletionReason.ProcessExited &&
-            target.IsActive &&
-            TryBeginImmediateResubscribe(target))
-        {
-            Subscribe(target, slot, stream);
-        }
-    }
-
-    private static ExtensionServiceOutputStream GetStream(TargetState target, SubscriptionSlot slot) =>
-        ReferenceEquals(slot, target.Stdout)
-            ? ExtensionServiceOutputStream.Stdout
-            : ExtensionServiceOutputStream.Stderr;
-
-    private static string GetStreamName(ExtensionServiceOutputStream stream) => stream switch
-    {
-        ExtensionServiceOutputStream.Stdout => "stdout",
-        ExtensionServiceOutputStream.Stderr => "stderr",
-        _ => "stderr"
-    };
-
-    private static string GetCompletionReasonName(ExtensionServiceOutputCompletionReason reason) => reason switch
-    {
-        ExtensionServiceOutputCompletionReason.ProcessExited => "process-exited",
-        ExtensionServiceOutputCompletionReason.Faulted => "faulted",
-        ExtensionServiceOutputCompletionReason.HostTeardown => "host-teardown",
-        _ => reason.ToString().ToLowerInvariant()
-    };
-
-    private static bool TryBeginImmediateResubscribe(TargetState target)
-    {
-        var now = DateTimeOffset.UtcNow;
-        var previous = target.LastImmediateResubscribeAt;
-        if (previous.HasValue && now - previous.Value < ImmediateResubscribeCooldown)
-        {
-            return false;
-        }
-
-        target.LastImmediateResubscribeAt = now;
-        return true;
+        slot.MarkCompleted(generation);
+        GetOrCreateWriter(target)?.FlushPartial();
     }
 
     private ServiceLogWriter? GetOrCreateWriter(TargetState target)
@@ -776,21 +729,122 @@ public sealed class ServiceLogRecorder : IDisposable
         }
     }
 
+    private static string TerminationReasonName(ExtensionServiceLogTerminationReason? reason) => reason switch
+    {
+        ExtensionServiceLogTerminationReason.HostShutdown => "host-shutdown",
+        ExtensionServiceLogTerminationReason.ExtensionUnloaded => "extension-unloaded",
+        ExtensionServiceLogTerminationReason.ServiceDisabled => "service-disabled",
+        ExtensionServiceLogTerminationReason.ServiceRemoved => "service-removed",
+        _ => "unknown"
+    };
+
+    private void OnFeedEntry(ServiceLogSink sink, ExtensionServiceLogEntry entry)
+    {
+        if (entry.Sequence is { } sequence)
+        {
+            sink.Target.AdvanceSequence(sequence);
+        }
+
+        switch (entry.Kind)
+        {
+            case ExtensionServiceLogEntryKind.Output:
+                if (entry.Data.IsDefaultOrEmpty)
+                {
+                    return;
+                }
+
+                if (!TryEnqueue(new PumpEvent(
+                    PumpEventKind.Chunk,
+                    sink.Target,
+                    entry.Stream ?? ExtensionServiceOutputStream.Stdout,
+                    entry.Timestamp,
+                    entry.Data,
+                    Sink: sink)))
+                {
+                    RecordOverflow(sink, entry.Data.Length);
+                }
+
+                return;
+            case ExtensionServiceLogEntryKind.GenerationStarted:
+                EnqueueFeedMarker(
+                    sink,
+                    entry.AttemptNumber is { } attempt
+                        ? $"process started (attempt {attempt})"
+                        : "process started");
+                return;
+            case ExtensionServiceLogEntryKind.ProcessExited:
+                EnqueueFeedMarker(
+                    sink,
+                    entry.ProcessExitCode is { } exitCode
+                        ? $"process exited (code {exitCode})"
+                        : "process exited");
+                return;
+            case ExtensionServiceLogEntryKind.StartupFailed:
+                var detail = string.IsNullOrWhiteSpace(entry.FailureReason)
+                    ? entry.FailureCode.ToString()
+                    : $"{entry.FailureCode}: {entry.FailureReason}";
+                EnqueueFeedMarker(sink, $"startup failed: {detail}");
+                return;
+            case ExtensionServiceLogEntryKind.CurrentState:
+                if (entry.LifecycleState is { } state)
+                {
+                    EnqueueFeedMarker(sink, $"lifecycle state: {state}");
+                }
+
+                return;
+            case ExtensionServiceLogEntryKind.Gap:
+                EnqueueFeedMarker(
+                    sink,
+                    $"log entries lost (sequences {entry.FirstMissingSequence}..{entry.LastMissingSequence})");
+                return;
+            case ExtensionServiceLogEntryKind.Termination:
+                EnqueueFeedMarker(sink, $"log feed ended: {TerminationReasonName(entry.TerminationReason)}");
+                return;
+        }
+    }
+
+    private void EnqueueFeedMarker(ServiceLogSink sink, string text)
+    {
+        if (!TryEnqueue(new PumpEvent(PumpEventKind.Marker, sink.Target, MarkerText: text, Sink: sink)))
+        {
+            // Marker loss under pressure is acceptable; output bytes are accounted separately.
+        }
+    }
+
     private sealed class TargetState(ServiceLogTarget target)
     {
         private int _active = 1;
         private int _removed;
+        private long _lastSequence = -1;
 
         public ServiceLogTarget Target { get; } = target;
-        public DateTimeOffset? LastImmediateResubscribeAt { get; set; }
-        public SubscriptionSlot Stdout { get; } = new();
-        public SubscriptionSlot Stderr { get; } = new();
+        public SubscriptionSlot Slot { get; } = new();
         public bool IsActive => Volatile.Read(ref _active) != 0;
         public bool IsRemoved => Volatile.Read(ref _removed) != 0;
+        public long LastSequence => Interlocked.Read(ref _lastSequence);
 
         public void Deactivate() => Volatile.Write(ref _active, 0);
 
         public void MarkRemoved() => Volatile.Write(ref _removed, 1);
+
+        public void AdvanceSequence(long sequence)
+        {
+            while (true)
+            {
+                var current = Interlocked.Read(ref _lastSequence);
+                if (sequence <= current)
+                {
+                    return;
+                }
+
+                if (Interlocked.CompareExchange(ref _lastSequence, sequence, current) == current)
+                {
+                    return;
+                }
+            }
+        }
+
+        public void ResetSequence() => Interlocked.Exchange(ref _lastSequence, -1);
     }
 
     private sealed class SubscriptionSlot
@@ -802,7 +856,7 @@ public sealed class ServiceLogRecorder : IDisposable
 
         private long _state;
 
-        public IExtensionServiceOutputSubscription? Subscription { get; set; }
+        public IExtensionServiceLogSubscription? Subscription { get; set; }
 
         public bool IsOpen => (Volatile.Read(ref _state) & StatusMask) == Open;
 
@@ -845,16 +899,14 @@ public sealed class ServiceLogRecorder : IDisposable
         private static long Encode(int generation, int status) => ((long)generation << 2) | (uint)status;
     }
 
-    private sealed class ServiceOutputSink(
+    private sealed class ServiceLogSink(
         ServiceLogRecorder recorder,
         TargetState target,
         SubscriptionSlot slot,
-        ExtensionServiceOutputStream stream,
-        int generation) : IExtensionServiceOutputSink
+        int generation) : IExtensionServiceLogSink
     {
         public long PendingDroppedBytes;
         public int PendingCompletion;
-        public int PendingCompletionReason;
         public int OverflowQueued;
 
         public TargetState Target { get; } = target;
@@ -863,54 +915,19 @@ public sealed class ServiceLogRecorder : IDisposable
         public bool HasPendingEvents =>
             Volatile.Read(ref PendingDroppedBytes) > 0 || Volatile.Read(ref PendingCompletion) != 0;
 
-        public void OnChunk(ExtensionServiceOutputChunk chunk)
-        {
-            var data = chunk.Data;
-            if (recorder.TryEnqueue(new PumpEvent(
-                PumpEventKind.Chunk,
-                Target,
-                chunk.Stream,
-                chunk.Timestamp,
-                data,
-                Sink: this)))
-            {
-                return;
-            }
+        public void OnEntry(ExtensionServiceLogEntry entry) => recorder.OnFeedEntry(this, entry);
 
-            if (data is not null)
-            {
-                recorder.RecordOverflow(this, data.LongLength);
-            }
-        }
-
-        public void OnCompleted(ExtensionServiceOutputCompletionReason reason)
+        public void OnCompleted()
         {
             if (recorder.TryEnqueue(new PumpEvent(
                 PumpEventKind.Completed,
                 Target,
-                Stream: stream,
-                CompletionReason: reason,
                 Sink: this)))
             {
                 return;
             }
 
-            recorder.RecordOverflowCompletion(this, reason);
-        }
-
-        public void OnDropped(long byteCount)
-        {
-            if (recorder.TryEnqueue(new PumpEvent(
-                PumpEventKind.Dropped,
-                Target,
-                Stream: stream,
-                ByteCount: byteCount,
-                Sink: this)))
-            {
-                return;
-            }
-
-            recorder.RecordOverflow(this, byteCount);
+            recorder.RecordOverflowCompletion(this);
         }
     }
 
@@ -957,9 +974,8 @@ public sealed class ServiceLogRecorder : IDisposable
         TargetState Target,
         ExtensionServiceOutputStream Stream = default,
         DateTimeOffset Timestamp = default,
-        byte[]? Data = null,
+        ImmutableArray<byte> Data = default,
         long ByteCount = 0,
-        ExtensionServiceOutputCompletionReason CompletionReason = default,
-        ServiceOutputSink? Sink = null,
+        ServiceLogSink? Sink = null,
         string? MarkerText = null);
 }

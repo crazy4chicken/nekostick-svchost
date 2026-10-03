@@ -83,7 +83,15 @@ public sealed partial class SvchostApiHandler
             activeForwardedRequestCount = runtime.ActiveForwardedRequestCount,
             lastUpdatedAt = runtime.LastUpdatedAt,
             lastHealthAt = runtime.LastHealthAt,
-            ownerExtensionId = runtime.OwnerExtensionId
+            ownerExtensionId = runtime.OwnerExtensionId,
+            // Failure diagnostics (1.4.0-preview.6): null/absent while healthy.
+            failureCode = runtime.FailureCode == ExtensionServiceFailureCode.None
+                ? null
+                : runtime.FailureCode.ToString(),
+            failureReason = string.IsNullOrWhiteSpace(runtime.FailureReason) ? null : runtime.FailureReason,
+            processExitCode = runtime.ProcessExitCode,
+            restartCount = runtime.RestartCount,
+            retryAt = runtime.RetryAt
         };
 
     private static object? ServiceReconcileProjection(SyncReport? report, ServiceSyncReport? service)

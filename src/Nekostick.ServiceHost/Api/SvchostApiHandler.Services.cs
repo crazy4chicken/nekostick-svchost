@@ -76,7 +76,7 @@ public sealed partial class SvchostApiHandler
                         enabled = !(config.Stopped ?? Array.Empty<string>())
                             .Contains(serviceName, StringComparer.Ordinal),
                         state = runtime?.LifecycleState.ToString(),
-                        detail = runtime?.HealthState.ToString(),
+                        detail = DetailFor(runtime),
                         routeIds = lockEntry?.RouteIds ?? new List<Guid>(),
                         source = lockEntry?.Source,
                         runtime = RuntimeProjection(runtime),
@@ -88,6 +88,24 @@ public sealed partial class SvchostApiHandler
         }
 
         return JsonResponse(200, new { services });
+    }
+
+    private static string? DetailFor(ExtensionServiceRuntimeSnapshot? runtime)
+    {
+        if (runtime is null)
+        {
+            return null;
+        }
+
+        // Failed services carry a bounded human-readable failure reason; prefer
+        // it over the health state, which stays stuck at its last observation.
+        if (runtime.LifecycleState == ExtensionServiceLifecycleState.Failed &&
+            !string.IsNullOrWhiteSpace(runtime.FailureReason))
+        {
+            return runtime.FailureReason;
+        }
+
+        return runtime.HealthState.ToString();
     }
 
     private async ValueTask<ExtensionStreamingResponse> HandleServiceActionAsync(
