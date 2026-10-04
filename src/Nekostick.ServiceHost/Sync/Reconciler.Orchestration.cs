@@ -242,7 +242,7 @@ public sealed partial class Reconciler
                     completedAt,
                     reports.ToImmutableArray(),
                     replaceResult.Errors.FirstOrDefault()?.Code,
-                    "Unable to replace the full Host configuration.")
+                    ReplaceFailureMessage(replaceResult.Errors))
                 {
                     FailureCode = SyncErrorCode.ReconcileFailed,
                     ConsumedSettingsVersion = consumedSettingsVersion,
@@ -307,6 +307,24 @@ public sealed partial class Reconciler
             Notes = orphanNotes,
             WrittenConfigurationVersion = writtenConfigurationVersion
         };
+    }
+
+    private static string ReplaceFailureMessage(ImmutableArray<ConfigurationError> errors)
+    {
+        // The host returns safe, bounded error messages; surface them verbatim
+        // instead of hiding the rejection reason behind the generic fallback.
+        var details = errors.IsDefaultOrEmpty
+            ? null
+            : string.Join(
+                "; ",
+                errors
+                    .Select(error => string.IsNullOrWhiteSpace(error.Message)
+                        ? error.Code.ToString()
+                        : $"{error.Code}: {error.Message}")
+                    .Distinct(StringComparer.Ordinal));
+        return string.IsNullOrEmpty(details)
+            ? "Unable to replace the full Host configuration."
+            : $"Unable to replace the full Host configuration ({details}).";
     }
 
     private async ValueTask ResumeWaitingServicesBestEffortAsync(
