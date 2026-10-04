@@ -82,6 +82,7 @@ public sealed partial class Reconciler
         var replaceSucceeded = false;
         long? writtenConfigurationVersion = null;
         var orphanNotes = ImmutableArray<string>.Empty;
+        HashSet<Guid>? pendingServiceRemovalIds = null;
         for (var attempt = 0; attempt < MaxReplaceAttempts; attempt++)
         {
             var snapshotResult = await _fullConfiguration.ReadAsync(cancellationToken).ConfigureAwait(false);
@@ -135,6 +136,33 @@ public sealed partial class Reconciler
                 desiredState.ConfiguredLockServiceIds,
                 desiredServiceIds);
             orphanNotes = orphanSweep.Notes;
+            // The Host rejects removing a service while any route still targets
+            // it, so cascade in two passes: the first changeset drops the routes
+            // and keeps the services; the next loop iteration removes them once
+            // the re-read snapshot shows no references. The pending set is fixed
+            // on the first pass because orphan detection is route-driven and a
+            // route-less orphan is invisible to it.
+            pendingServiceRemovalIds ??= snapshot.Services
+                .Where(service =>
+                    !desiredServiceIds.Contains(service.Id) &&
+                    !preservedSourceServiceIds.Contains(service.Id) &&
+                    (desiredState.ManagedServiceIds.Contains(service.Id) ||
+                        orphanSweep.ServiceIds.Contains(service.Id)))
+                .Select(service => service.Id)
+                .ToHashSet();
+            var deferredRemovalIds = pendingServiceRemovalIds
+                .Where(serviceId => snapshot.Routes.Any(route =>
+                    route.Target is MicroserviceRouteTargetConfiguration microservice &&
+                    microservice.ServiceId == serviceId))
+                .ToHashSet();
+            var removeNowIds = pendingServiceRemovalIds
+                .Where(serviceId => !deferredRemovalIds.Contains(serviceId))
+                .ToHashSet();
+            if (deferredRemovalIds.Count > 0)
+            {
+                orphanNotes = orphanNotes.Add(
+                    $"Deferred removal of {deferredRemovalIds.Count} service(s) until their routes are removed from the Host configuration.");
+            }
             Dictionary<Guid, ImmutableArray<ServiceFieldDiff>>? serviceDiffs = null;
             var preservedServices = desiredServices.Select(service =>
             {
@@ -154,7 +182,9 @@ public sealed partial class Reconciler
                 desiredRoutes.Select(route => PreserveRouteVersion(route, snapshot)),
                 preservedSourceServiceIds,
                 preservedSourceRouteIds,
-                desiredState.ConfiguredLockServiceIds);
+                desiredState.ConfiguredLockServiceIds,
+                deferredRemovalIds,
+                removeNowIds);
             for (var index = 0; index < reports.Count; index++)
             {
                 var report = reports[index];
@@ -172,6 +202,35 @@ public sealed partial class Reconciler
                     };
                 }
             }
+            if (deferredRemovalIds.Count > 0)
+            {
+                // A route outside svchost management still targets a service being
+                // removed; the Host would keep rejecting the removal forever, so
+                // fail loudly instead of converging to a silent no-op.
+                var blockingRouteIds = changes.Routes
+                    .Where(route =>
+                        route.Target is MicroserviceRouteTargetConfiguration microservice &&
+                        deferredRemovalIds.Contains(microservice.ServiceId))
+                    .Select(route => route.Id)
+                    .ToArray();
+                if (blockingRouteIds.Length > 0)
+                {
+                    return new SyncReport(
+                        false,
+                        true,
+                        completedAt,
+                        reports.ToImmutableArray(),
+                        ConfigurationErrorCode.Validation,
+                        $"Unable to remove service(s) {string.Join(", ", deferredRemovalIds)}: route(s) {string.Join(", ", blockingRouteIds)} still target them and are not managed by svchost.")
+                    {
+                        FailureCode = SyncErrorCode.ReconcileFailed,
+                        ConsumedSettingsVersion = consumedSettingsVersion,
+                        Notes = orphanNotes,
+                        WrittenConfigurationVersion = writtenConfigurationVersion
+                    };
+                }
+            }
+
             if (SemanticallyEqualIgnoringVersion(snapshot.Services, changes.Services) &&
                 SemanticallyEqualIgnoringVersion(snapshot.Routes, changes.Routes))
             {
@@ -229,6 +288,13 @@ public sealed partial class Reconciler
             if (replaceResult.IsSuccess)
             {
                 replaceCompleted = true;
+                if (deferredRemovalIds.Count > 0)
+                {
+                    // Routes are dropped now; continue so the deferred service
+                    // removals land in a follow-up write within this reconcile.
+                    continue;
+                }
+
                 replaceSucceeded = true;
                 break;
             }

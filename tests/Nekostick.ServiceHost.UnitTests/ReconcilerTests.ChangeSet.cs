@@ -96,6 +96,94 @@ public sealed partial class ReconcilerTests
     }
 
     [Fact]
+    public async Task Reconcile_removed_service_cascades_route_removal_before_service_removal()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var serviceId = Guid.CreateVersion7();
+            var routeId = Guid.CreateVersion7();
+            var settings = new SvchostSettings(
+                null,
+                new SvchostRouteSettings(Guid.CreateVersion7(), Guid.CreateVersion7()),
+                new Dictionary<string, SvchostConfigSettings>(StringComparer.Ordinal)
+                {
+                    ["demo"] = new SvchostConfigSettings(
+                        "services: {}",
+                        new LockModel
+                        {
+                            Services = new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal)
+                            {
+                                ["api"] = new LockServiceEntry(new LockSource(), serviceId, [routeId])
+                            }
+                        })
+                });
+            var service = CreateService(serviceId, true, "/old/managed", "/old", DateTimeOffset.UtcNow);
+            var route = CreateRoute(
+                routeId,
+                serviceId,
+                "/old",
+                "{\"owner\":\"nekostick.svchost\",\"config\":\"demo\",\"service\":\"api\"}");
+            var full = new FakeFullConfigurationApi(CreateSnapshot([service], [route]));
+            var reconciler = CreateReconciler(new FakeConfigurationApi(ToExtensionSettings(settings)), full, root);
+
+            var report = await reconciler.ReconcileAsync("test");
+
+            Assert.True(report.Succeeded);
+            Assert.Equal(2, full.ReplaceCallCount);
+            var firstChanges = full.ChangesHistory[0];
+            Assert.Contains(firstChanges.Services, item => item.Id == serviceId);
+            Assert.DoesNotContain(firstChanges.Routes, item => item.Id == routeId);
+            Assert.Empty(full.Snapshot.Services);
+            Assert.Empty(full.Snapshot.Routes);
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+    [Fact]
+    public async Task Reconcile_removed_service_fails_loudly_when_foreign_route_targets_it()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var serviceId = Guid.CreateVersion7();
+            var routeId = Guid.CreateVersion7();
+            var settings = new SvchostSettings(
+                null,
+                new SvchostRouteSettings(Guid.CreateVersion7(), Guid.CreateVersion7()),
+                new Dictionary<string, SvchostConfigSettings>(StringComparer.Ordinal)
+                {
+                    ["demo"] = new SvchostConfigSettings(
+                        "services: {}",
+                        new LockModel
+                        {
+                            Services = new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal)
+                            {
+                                ["api"] = new LockServiceEntry(new LockSource(), serviceId)
+                            }
+                        })
+                });
+            var service = CreateService(serviceId, true, "/old/managed", "/old", DateTimeOffset.UtcNow);
+            var foreignRoute = CreateRoute(routeId, serviceId, "/foreign", "{}");
+            var full = new FakeFullConfigurationApi(CreateSnapshot([service], [foreignRoute]));
+            var reconciler = CreateReconciler(new FakeConfigurationApi(ToExtensionSettings(settings)), full, root);
+
+            var report = await reconciler.ReconcileAsync("test");
+
+            Assert.False(report.Succeeded);
+            Assert.Equal(0, full.ReplaceCallCount);
+            Assert.Contains("not managed by svchost", report.Error);
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+    [Fact]
     public async Task Reconcile_host_patterns_case_only_changes_skip_replace()
     {
         var fixture = await CreateRouteReconcileFixtureAsync(
@@ -396,9 +484,16 @@ public sealed partial class ReconcilerTests
             var report = await reconciler.ReconcileAsync([serviceId], [routeId], "test");
 
             Assert.True(report.Succeeded);
-            Assert.Equal(1, full.ReplaceCallCount);
+            // Two writes: routes first, then the services once the re-read
+            // snapshot shows no route still targeting them.
+            Assert.Equal(2, full.ReplaceCallCount);
+            var firstChanges = full.ChangesHistory[0];
+            Assert.Contains(firstChanges.Services, item => item.Id == serviceId);
+            Assert.DoesNotContain(firstChanges.Routes, item => item.Id == routeId);
             Assert.Empty(full.LastChanges!.Services);
             Assert.Empty(full.LastChanges.Routes);
+            Assert.Empty(full.Snapshot.Services);
+            Assert.Empty(full.Snapshot.Routes);
         }
         finally
         {

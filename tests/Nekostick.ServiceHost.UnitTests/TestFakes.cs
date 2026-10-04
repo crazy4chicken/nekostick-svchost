@@ -143,6 +143,8 @@ internal sealed class FakeFullConfigurationApi : IExtensionFullConfigurationApi
 
     public ConfigurationChangeSet? LastChanges { get; private set; }
 
+    public List<ConfigurationChangeSet> ChangesHistory { get; } = [];
+
     public ValueTask<ConfigurationReadResult<HostConfigurationSnapshot>> ReadAsync(
         CancellationToken cancellationToken)
     {
@@ -158,6 +160,7 @@ internal sealed class FakeFullConfigurationApi : IExtensionFullConfigurationApi
         ReplaceCallCount++;
         LastExpectedVersion = expectedVersion;
         LastChanges = changes;
+        ChangesHistory.Add(changes);
         Snapshot = new HostConfigurationSnapshot(
             expectedVersion + 1,
             changes.GlobalSettings,

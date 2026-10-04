@@ -18,7 +18,9 @@ public sealed partial class Reconciler
         IEnumerable<RouteConfiguration> desiredRoutes,
         IEnumerable<Guid>? preservedServiceIds = null,
         IEnumerable<Guid>? preservedRouteIds = null,
-        IEnumerable<Guid>? configuredLockServiceIds = null)
+        IEnumerable<Guid>? configuredLockServiceIds = null,
+        IEnumerable<Guid>? deferredServiceRemovalIds = null,
+        IEnumerable<Guid>? forceServiceRemovalIds = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(managedServiceIds);
@@ -37,10 +39,15 @@ public sealed partial class Reconciler
         var preservedServices = preservedServiceIds?.ToHashSet() ?? new HashSet<Guid>();
         var lockServiceIds = configuredLockServiceIds?.ToHashSet() ?? managedServices;
         var orphanSweep = FindOrphanSweep(snapshot, lockServiceIds, desiredServiceIds);
+        var deferredRemovals = deferredServiceRemovalIds?.ToHashSet() ?? new HashSet<Guid>();
+        var forcedRemovals = forceServiceRemovalIds?.ToHashSet() ?? new HashSet<Guid>();
         var services = snapshot.Services
             .Where(service =>
-                (!managedServices.Contains(service.Id) || preservedServices.Contains(service.Id)) &&
-                !orphanSweep.ServiceIds.Contains(service.Id))
+                (!managedServices.Contains(service.Id) ||
+                    preservedServices.Contains(service.Id) ||
+                    deferredRemovals.Contains(service.Id)) &&
+                (!orphanSweep.ServiceIds.Contains(service.Id) || deferredRemovals.Contains(service.Id)) &&
+                !forcedRemovals.Contains(service.Id))
             .Concat(desiredServiceArray)
             .ToImmutableArray();
 
