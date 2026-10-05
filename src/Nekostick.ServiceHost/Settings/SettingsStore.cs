@@ -39,12 +39,8 @@ public sealed class SettingsStore
         var result = await _configurationApi.ReadSettingsAsync(cancellationToken).ConfigureAwait(false);
         if (!result.IsSuccess)
         {
-            // A fresh node has no settings row; host API >=1.4 reports NoSettings, older hosts
-            // report NotFound. Treat both as an empty document so the caller can create and
-            // persist the initial settings.
-            return result.Errors.Any(error =>
-                    error.Code == ConfigurationErrorCode.NoSettings ||
-                    error.Code == ConfigurationErrorCode.NotFound)
+            // A fresh extension has no settings document; API 1.4 reports NoSettings.
+            return result.Errors.Any(error => error.Code == ConfigurationErrorCode.NoSettings)
                 ? ConfigurationReadResult<SettingsDocumentSnapshot>.Success(
                     new SettingsDocumentSnapshot(null, null, 0, null))
                 : ConfigurationReadResult<SettingsDocumentSnapshot>.Failure(result.Errors.ToArray());
@@ -110,7 +106,7 @@ public sealed class SettingsStore
         if (validationErrors.Count > 0)
         {
             return ConfigurationWriteResult.Failure(
-                new ConfigurationError(ConfigurationErrorCode.Validation));
+                new ConfigurationError(ConfigurationErrorCode.Validation, string.Join(" ", validationErrors)));
         }
 
         string rawJson;
@@ -118,10 +114,10 @@ public sealed class SettingsStore
         {
             rawJson = JsonSerializer.Serialize(settings, SerializerOptions);
         }
-        catch (JsonException)
+        catch (JsonException exception)
         {
             return ConfigurationWriteResult.Failure(
-                new ConfigurationError(ConfigurationErrorCode.Validation));
+                new ConfigurationError(ConfigurationErrorCode.Validation, ExtensionErrorDetail.FromException(exception).Message));
         }
 
         return await WriteRawSettingsAsync(expectedVersion, rawJson, cancellationToken).ConfigureAwait(false);
@@ -134,10 +130,10 @@ public sealed class SettingsStore
         CancellationToken cancellationToken = default)
 {
         ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
-        if (!TryValidateRawJson(rawJson, out _))
+        if (!TryValidateRawJson(rawJson, out var error))
         {
             return ConfigurationWriteResult.Failure(
-                new ConfigurationError(ConfigurationErrorCode.Validation));
+                new ConfigurationError(ConfigurationErrorCode.Validation, error!));
         }
 
         var version = expectedVersion;
@@ -165,7 +161,7 @@ public sealed class SettingsStore
         }
 
         return lastResult ?? ConfigurationWriteResult.Failure(
-            new ConfigurationError(ConfigurationErrorCode.ConcurrencyConflict));
+            new ConfigurationError(ConfigurationErrorCode.ConcurrencyConflict, "The settings write exhausted its conflict attempts."));
     }
 
     /// <summary>Reads, transforms, and writes settings with bounded conflict retries.</summary>
@@ -190,22 +186,22 @@ public sealed class SettingsStore
             {
                 updated = update(current) ?? throw new InvalidOperationException("The settings update returned null.");
             }
-            catch (ArgumentException)
+            catch (ArgumentException exception)
             {
                 return ConfigurationWriteResult.Failure(
-                    new ConfigurationError(ConfigurationErrorCode.Validation));
+                    new ConfigurationError(ConfigurationErrorCode.Validation, ExtensionErrorDetail.FromException(exception).Message));
             }
-            catch (InvalidOperationException)
+            catch (InvalidOperationException exception)
             {
                 return ConfigurationWriteResult.Failure(
-                    new ConfigurationError(ConfigurationErrorCode.Validation));
+                    new ConfigurationError(ConfigurationErrorCode.Validation, ExtensionErrorDetail.FromException(exception).Message));
             }
 
             var validationErrors = updated.Validate();
             if (validationErrors.Count > 0)
             {
                 return ConfigurationWriteResult.Failure(
-                    new ConfigurationError(ConfigurationErrorCode.Validation));
+                    new ConfigurationError(ConfigurationErrorCode.Validation, string.Join(" ", validationErrors)));
             }
 
             string rawJson;
@@ -213,10 +209,10 @@ public sealed class SettingsStore
             {
                 rawJson = JsonSerializer.Serialize(updated, SerializerOptions);
             }
-            catch (JsonException)
+            catch (JsonException exception)
             {
                 return ConfigurationWriteResult.Failure(
-                    new ConfigurationError(ConfigurationErrorCode.Validation));
+                    new ConfigurationError(ConfigurationErrorCode.Validation, ExtensionErrorDetail.FromException(exception).Message));
             }
 
             lastResult = await WriteRawOnceAsync(read.Value.Version, rawJson, cancellationToken)
@@ -228,7 +224,7 @@ public sealed class SettingsStore
         }
 
         return lastResult ?? ConfigurationWriteResult.Failure(
-            new ConfigurationError(ConfigurationErrorCode.ConcurrencyConflict));
+            new ConfigurationError(ConfigurationErrorCode.ConcurrencyConflict, "The settings update exhausted its conflict attempts."));
     }
 
     private async ValueTask<ConfigurationWriteResult> WriteRawOnceAsync(
@@ -289,9 +285,6 @@ public sealed class SettingsStore
     private static bool IsConflict(ConfigurationWriteResult result) =>
         !result.IsSuccess && result.Errors.Any(error => error.Code == ConfigurationErrorCode.ConcurrencyConflict);
 
-    private static ConfigurationReadResult<T> ValidationFailure<T>(string message)
-    {
-        _ = message;
-        return ConfigurationReadResult<T>.Failure(new ConfigurationError(ConfigurationErrorCode.Validation));
-    }
+    private static ConfigurationReadResult<T> ValidationFailure<T>(string message) =>
+        ConfigurationReadResult<T>.Failure(new ConfigurationError(ConfigurationErrorCode.Validation, message));
 }

@@ -2,6 +2,10 @@
 
 管理 API 的根路径为 `/svchost/api`. 除 `GET /svchost/api/status` 外, 其他端点都要求在 `X-Api-Key` 请求头中提供当前有效 key; 未通过认证时返回 `401`. Bootstrap 模式下使用日志中的 bootstrap key, 它也用于调用 `POST /svchost/api/bootstrap/key`.
 
+The extension requires a matched host with Contracts **1.4.0-preview.7** signatures, `IExtensionHostBridge14`, and negotiated Host API **>=1.4.0 <2.0.0**. Upgrade the host and extension together. Both preview.6 and preview.7 report semantic ABI/API `1.4.0`; that version check does not establish preview.7 signature compatibility. See the pinned [upstream API contract](https://github.com/Nekolla-Team/nekostick/blob/aae38f85162691a4b25fca8d1294190365e44b21/docs/extension-api/api-1.4.md).
+
+The host API result migration does not change `/svchost/api` routes, HTTP status mappings, JSON fields, or SSE framing. Errors retain the local `{ "error": { "code", "message" } }` shape and stable local codes; diagnostic messages preserve the operation's precise failure reason, rather than acting as machine keys.
+
 ## 端点
 
 | 方法 | 路径 | 认证 | 说明 |
@@ -47,7 +51,7 @@
 - `lastReconcile`: `null` when there is no applicable cached report. A matching service entry projects `{ "completedAt", "succeeded", "trigger", "decision", "diffs" }`, where `succeeded` is the service entry's outcome and `diffs` contains `{ "field", "oldValue", "newValue" }` values (environment values are already masked). If the effective report is a failed whole-run report with an empty service list, it instead projects `{ "completedAt", "succeeded": false, "trigger", "decision": null, "diffs": [], "error?", "errorKind?" }`.
 - `driftCorrected`: `true` only when the matching service decision is `updated`, the trigger is `startup` or `drift-host-version`, and `diffs` is non-empty; otherwise `false`.
 
-With contracts 1.4.0-preview.6 the host runtime snapshot also carries failure diagnostics: `runtime.failureCode` / `runtime.failureReason` / `runtime.processExitCode` / `runtime.restartCount` / `runtime.retryAt` (null or zero while healthy), and a failed service's top-level `detail` shows `failureReason` instead of the stale health state. `lastReconcile` comes from the handler's in-memory cache and is `null` until an applicable service or run-level failure report is recorded; it resets on extension restart.
+With the matched Contracts 1.4.0-preview.7 host, the runtime snapshot carries failure diagnostics: `runtime.failureCode` / `runtime.failureReason` / `runtime.processExitCode` / `runtime.restartCount` / `runtime.retryAt` (null or zero while healthy), and a failed service's top-level `detail` shows `failureReason` instead of the stale health state. `lastReconcile` comes from the handler's in-memory cache and is `null` until an applicable service or run-level failure report is recorded; it resets on extension restart.
 Read-path and post-reconcile supervisor reads are fetched before entering the tracker lock, so concurrent observations may apply out of order; the count is advisory.
 
 `PUT /svchost/api/configs/{name}` 会校验并保存单份 Compose YAML, 但不会预先检查它与其他配置的 global 服务名冲突. 若保存后发现冲突, 本次请求仍返回 `200` 和 `succeeded: false` 的同步报告; 配置已写入, 冲突会继续阻断后续 reconciliation, 直到修复.

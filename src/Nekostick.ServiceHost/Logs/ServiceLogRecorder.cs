@@ -13,6 +13,7 @@ public sealed class ServiceLogRecorder : IDisposable
 
     private readonly IExtensionServiceOutputApi? _outputApi;
     private readonly IExtensionLogger? _logger;
+    private readonly IExtensionLogWriter? _logWriter;
     private readonly object _syncGate = new();
     private readonly object _liveLineGate = new();
     private readonly Dictionary<Guid, LiveLineSubscribers> _liveLineSubscribers = new();
@@ -38,10 +39,14 @@ public sealed class ServiceLogRecorder : IDisposable
     private int _disposeRequested;
 
     /// <summary>Creates a recorder for the host's optional service output API.</summary>
-    public ServiceLogRecorder(IExtensionServiceOutputApi? outputApi, IExtensionLogger? logger)
+    public ServiceLogRecorder(
+        IExtensionServiceOutputApi? outputApi,
+        IExtensionLogger? logger,
+        IExtensionLogWriter? logWriter = null)
     {
         _outputApi = outputApi;
         _logger = logger;
+        _logWriter = logWriter;
         _pump = Task.Run(PumpAsync);
     }
 
@@ -299,12 +304,6 @@ public sealed class ServiceLogRecorder : IDisposable
         {
             SubscribeAsync(target, sink, generation).GetAwaiter().GetResult();
         }
-        catch (MissingMethodException)
-        {
-            // Host contracts predate the ordered log feed (pre-1.4.0-preview.6);
-            // degrade to no recording instead of failing every reconcile tick.
-            DisableFeature("service-output-incompatible");
-        }
         catch
         {
             target.Slot.Subscription = null;
@@ -330,15 +329,19 @@ public sealed class ServiceLogRecorder : IDisposable
                 return;
             }
 
-            var code = result.Code.ToString();
-            if (string.Equals(code, "Unsupported", StringComparison.Ordinal))
+            if (!result.Succeeded)
+            {
+                ReportSubscriptionFailure(result);
+            }
+
+            if (result.Code == ExtensionServiceLogCode.Unsupported)
             {
                 DisposeHandle(result.Subscription);
                 DisableFeature("service-output-unsupported");
                 return;
             }
 
-            if (string.Equals(code, "InvalidCursor", StringComparison.Ordinal) && cursor.HasValue)
+            if (result.Code == ExtensionServiceLogCode.InvalidCursor && cursor.HasValue)
             {
                 DisposeHandle(result.Subscription);
                 target.ResetSequence();
@@ -349,7 +352,7 @@ public sealed class ServiceLogRecorder : IDisposable
                 continue;
             }
 
-            if (string.Equals(code, "Subscribed", StringComparison.Ordinal) && result.Subscription is not null)
+            if (result.Code == ExtensionServiceLogCode.Subscribed && result.Subscription is not null)
             {
                 target.Slot.Subscription = result.Subscription;
                 target.Slot.MarkOpened(generation);
@@ -363,6 +366,20 @@ public sealed class ServiceLogRecorder : IDisposable
             DisposeHandle(result.Subscription);
             target.Slot.Subscription = null;
             return;
+        }
+    }
+
+    private void ReportSubscriptionFailure(ExtensionServiceLogSubscriptionResult result)
+    {
+        try
+        {
+            _logWriter?.WriteText(
+                ExtensionLogLevel.Warning,
+                $"Service log subscription for '{result.ServiceId}' failed with {result.Code}: {result.Detail!.Message}");
+        }
+        catch
+        {
+            // Failure diagnostics must not interrupt subscription cleanup or retries.
         }
     }
 

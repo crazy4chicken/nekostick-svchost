@@ -82,7 +82,7 @@ public sealed class LegacySettingsMigrationTests
     {
         var fullConfiguration = new FakeFullConfigurationApi(CreateSnapshot());
         fullConfiguration.NextReadResult = ConfigurationReadResult<HostConfigurationSnapshot>.Failure(
-            new ConfigurationError(ConfigurationErrorCode.StorageUnavailable));
+            new ConfigurationError(ConfigurationErrorCode.StorageUnavailable, "The configuration store could not be read."));
 
         var result = await new LegacySettingsMigration(fullConfiguration).MigrateAsync();
 

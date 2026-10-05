@@ -28,7 +28,7 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
     private readonly SettingsStore _settingsStore;
     private readonly ComposeFileParser _composeFileParser;
     private readonly Reconciler _reconciler;
-    private readonly IExtensionHostBridge13 _bridge;
+    private readonly IExtensionHostBridge14 _bridge;
     private readonly Func<IEnumerable<Guid>, IEnumerable<Guid>, string, CancellationToken, ValueTask<SyncReport>> _reconcile;
     private readonly Action<SyncReport>? _syncObserver;
     private readonly SemaphoreSlim _mutationGate = new(1, 1);
@@ -43,7 +43,7 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
         SettingsStore settingsStore,
         ComposeFileParser composeFileParser,
         Reconciler reconciler,
-        IExtensionHostBridge13 bridge,
+        IExtensionHostBridge14 bridge,
         Func<IEnumerable<Guid>, IEnumerable<Guid>, string, CancellationToken, ValueTask<SyncReport>>? reconcile = null,
         Action<SyncReport>? syncObserver = null,
         ServiceLogRecorder? logRecorder = null)

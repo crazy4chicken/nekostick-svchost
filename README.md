@@ -18,6 +18,8 @@
 
 ### 安装
 
+This extension requires a matched host implementing `Nekolla.Nekostick.Contracts` **1.4.0-preview.7** signatures and `IExtensionHostBridge14`, with negotiated Host API **>=1.4.0 <2.0.0**. The upstream contract baseline is [`aae38f85162691a4b25fca8d1294190365e44b21`](https://github.com/Nekolla-Team/nekostick/tree/aae38f85162691a4b25fca8d1294190365e44b21). Upgrade the host and extension together; preview.6 hosts are not supported. `HostApiVersion.Current` and `ExtensionAbi.Version` remain `1.4.0`, so the semantic ABI check alone cannot distinguish preview.6 from preview.7 signature support.
+
 1. 从 [Actions](https://github.com/Nekolla-Team/nekostick-svchost/actions/workflows/build.yml) 下载最新的 `nekostick-svchost.<sha>.zip` 构建产物
 2. 解压到 host 的 `extensions/nekostick.svchost/` 目录 (内含 `manifest.json` + dll)
 3. 重启或重载 host 以加载扩展

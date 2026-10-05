@@ -23,7 +23,7 @@ public sealed partial class SvchostEntry
         var startedAt = Stopwatch.GetTimestamp();
         ReconcileStarted();
         SettingsStore? settingsStore = null;
-        IExtensionHostBridge13? bridge = null;
+        IExtensionHostBridge14? bridge = null;
         try
         {
             Reconciler? reconciler;
@@ -98,7 +98,7 @@ public sealed partial class SvchostEntry
     }
 
     private async ValueTask ObserveReconciledServicesAsync(
-        IExtensionHostBridge13? bridge,
+        IExtensionHostBridge14? bridge,
         SyncReport report,
         CancellationToken cancellationToken)
     {
@@ -163,7 +163,7 @@ public sealed partial class SvchostEntry
     }
 
     private static async ValueTask WriteReconcileReportAsync(
-        IExtensionHostBridge13? bridge,
+        IExtensionHostBridge14? bridge,
         SettingsStore? settingsStore,
         SyncReport report,
         string trigger,
@@ -255,7 +255,7 @@ public sealed partial class SvchostEntry
     }
 
     private static void WriteReconcileFailure(
-        IExtensionHostBridge13? bridge,
+        IExtensionHostBridge14? bridge,
         string trigger,
         Exception exception,
         TimeSpan duration)
@@ -270,7 +270,7 @@ public sealed partial class SvchostEntry
     }
 
     private static void WriteReconcileLogLineBestEffort(
-        IExtensionHostBridge13 bridge,
+        IExtensionHostBridge14 bridge,
         ExtensionLogLevel level,
         string message)
     {
@@ -581,7 +581,7 @@ public sealed partial class SvchostEntry
 
     private void ObserveSync(SyncReport report)
     {
-        IExtensionHostBridge13? bridge;
+        IExtensionHostBridge14? bridge;
         bool startupDegraded;
         ServiceLogRecorder? logRecorder;
         lock (_lifecycleGate)

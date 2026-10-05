@@ -26,7 +26,7 @@ public sealed partial class ApiKeyService
     public const int MaxProbeAttempts = 8;
 
     private readonly SettingsStore _settingsStore;
-    private readonly IExtensionHostBridge13 _bridge;
+    private readonly IExtensionHostBridge14 _bridge;
     private readonly object _stateGate = new();
     private string? _permanentKey;
     private string? _bootstrapKey;
@@ -34,8 +34,8 @@ public sealed partial class ApiKeyService
     private bool _readonly;
     private bool _bootstrap;
 
-    /// <summary>Creates the API key state machine over a settings store and API 1.3 bridge.</summary>
-    public ApiKeyService(SettingsStore settingsStore, IExtensionHostBridge13 bridge)
+    /// <summary>Creates the API key state machine over a settings store and API 1.4 bridge.</summary>
+    public ApiKeyService(SettingsStore settingsStore, IExtensionHostBridge14 bridge)
     {
         _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
         _bridge = bridge ?? throw new ArgumentNullException(nameof(bridge));
@@ -171,9 +171,23 @@ public sealed partial class ApiKeyService
     private void ReportDegraded(string code) =>
         _bridge.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, code));
 
-    private static ApiKeyInitializationResult FailureResult(
+    private ApiKeyInitializationResult FailureResult(
         IReadOnlyCollection<ConfigurationError> errors)
     {
+        foreach (var error in errors)
+        {
+            try
+            {
+                _bridge.LogWriter.WriteText(
+                    ExtensionLogLevel.Warning,
+                    $"Settings initialization failed with {error.Code}: {error.Message}");
+            }
+            catch (Exception)
+            {
+                // Failure diagnostics must not change startup degradation.
+            }
+        }
+
         var code = errors.FirstOrDefault()?.Code ?? ConfigurationErrorCode.StorageUnavailable;
         return new ApiKeyInitializationResult(false, false, false, null, code);
     }

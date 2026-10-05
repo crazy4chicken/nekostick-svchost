@@ -14,7 +14,7 @@ namespace Nekostick.ServiceHost;
 public sealed partial class SvchostEntry : IExtensionEntry
 {
     private static readonly Task CompletedTask = Task.CompletedTask;
-    private static readonly HostApiVersion MinimumHostApiVersion = new(1, 3, 3);
+    private static readonly HostApiVersion MinimumHostApiVersion = new(1, 4, 0);
     private const int DriftForcedRetryBaseIntervalTicks = 1;
     private const int DriftForcedRetryMaximumIntervalTicks = 16;
     private static readonly TimeSpan DriftCheckInterval = TimeSpan.FromSeconds(60);
@@ -22,7 +22,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
     private readonly object _debounceGate = new();
     private readonly object _reconcileGate = new();
 
-    private IExtensionHostBridge13? _bridge;
+    private IExtensionHostBridge14? _bridge;
     private IExtensionRegistration? _registration;
     private SettingsStore? _settingsStore;
     private ApiKeyService? _apiKeyService;
@@ -62,17 +62,17 @@ public sealed partial class SvchostEntry : IExtensionEntry
         var host = context.Host;
         if (!ExtensionAbi.IsCompatible(MinimumHostApiVersion, host.ApiVersion))
         {
-            host.Logger.Report(ExtensionLogLevel.Warning, "api-13-unsupported");
+            host.Logger.Report(ExtensionLogLevel.Warning, "api-14-unsupported");
             return;
         }
 
-        if (host is not IExtensionHostBridge13 bridge)
+        if (host is not IExtensionHostBridge14 bridge)
         {
-            host.Logger.Report(ExtensionLogLevel.Warning, "api-13-bridge-unavailable");
+            host.Logger.Report(ExtensionLogLevel.Warning, "api-14-bridge-unavailable");
             return;
         }
 
-        var outputApi = (bridge as IExtensionHostBridge14)?.ServiceOutput;
+        var outputApi = bridge.ServiceOutput;
         if (!bridge.HostInfo.ReadOnly)
         {
             LegacySettingsMigrationResult migrationResult;
@@ -121,7 +121,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
             bridge.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "settings-initialization-failed"));
             return;
         }
-        var logRecorder = new ServiceLogRecorder(outputApi, bridge.Logger);
+        var logRecorder = new ServiceLogRecorder(outputApi, bridge.Logger, bridge.LogWriter);
         lock (_lifecycleGate)
         {
             _bridge = bridge;
@@ -210,18 +210,20 @@ public sealed partial class SvchostEntry : IExtensionEntry
             _apiHandler = apiHandler;
         }
 
-        var apiRegistered = context.Registration.TryRegisterStreamingHandler(apiHandler);
-        var webuiRegistered = context.Registration.TryRegisterStreamingHandler(webuiHandler);
-        if (!apiRegistered || !webuiRegistered)
+        var apiRegistration = context.Registration.TryRegisterStreamingHandler(apiHandler);
+        var webuiRegistration = context.Registration.TryRegisterStreamingHandler(webuiHandler);
+        ReportRegistrationFailure(bridge, apiRegistration, "register", SvchostApiHandler.StableHandlerId);
+        ReportRegistrationFailure(bridge, webuiRegistration, "register", WebuiHandler.StableHandlerId);
+        if (!apiRegistration.Succeeded || !webuiRegistration.Succeeded)
         {
-            if (apiRegistered)
+            if (apiRegistration.Succeeded)
             {
-                context.Registration.TryUnregisterHandler(SvchostApiHandler.StableHandlerId);
+                UnregisterHandler(bridge, context.Registration, SvchostApiHandler.StableHandlerId);
             }
 
-            if (webuiRegistered)
+            if (webuiRegistration.Succeeded)
             {
-                context.Registration.TryUnregisterHandler(WebuiHandler.StableHandlerId);
+                UnregisterHandler(bridge, context.Registration, WebuiHandler.StableHandlerId);
             }
 
             MarkStartupDegraded();
@@ -237,8 +239,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
             .ConfigureAwait(false);
         if (!routeResult)
         {
-            context.Registration.TryUnregisterHandler(SvchostApiHandler.StableHandlerId);
-            context.Registration.TryUnregisterHandler(WebuiHandler.StableHandlerId);
+            UnregisterHandler(bridge, context.Registration, SvchostApiHandler.StableHandlerId);
+            UnregisterHandler(bridge, context.Registration, WebuiHandler.StableHandlerId);
             MarkStartupDegraded();
             bridge.Logger.Report(ExtensionLogLevel.Warning, "handler-route-registration-failed");
             bridge.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "handler-route-registration-failed"));
@@ -246,22 +248,36 @@ public sealed partial class SvchostEntry : IExtensionEntry
         }
 
         var startupDegraded = false;
-        if (!host.Events.TrySubscribe(OnHostEventAsync))
+        var eventSubscription = host.Events.TrySubscribe(OnHostEventAsync);
+        if (eventSubscription is ExtensionEventSubscribeFailureResult subscriptionFailure)
         {
             startupDegraded = true;
             MarkStartupDegraded();
             bridge.Logger.Report(ExtensionLogLevel.Warning, "settings-event-subscription-failed");
             bridge.Status.Report(new ExtensionStatus(ExtensionStatusKind.Degraded, "settings-event-subscription-failed"));
+            WriteContractFailureBestEffort(
+                bridge,
+                $"Settings event subscription failed with {subscriptionFailure.Code}: {subscriptionFailure.Detail.Message}");
         }
 
         bool taskAccepted;
         try
         {
-            taskAccepted = await bridge.Tasks.StartAsync("sync", InitialReconcileAsync).ConfigureAwait(false);
+            var taskResult = await bridge.Tasks.StartAsync("sync", InitialReconcileAsync).ConfigureAwait(false);
+            taskAccepted = taskResult.Succeeded;
+            if (taskResult is ExtensionTaskStartFailureResult taskFailure)
+            {
+                WriteContractFailureBestEffort(
+                    bridge,
+                    $"Initial sync scheduling failed with {taskFailure.Code}: {taskFailure.Detail.Message}");
+            }
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             taskAccepted = false;
+            WriteContractFailureBestEffort(
+                bridge,
+                $"Initial sync scheduling threw: {ExtensionErrorDetail.FromException(exception).Message}");
         }
 
         if (!taskAccepted)
@@ -281,7 +297,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
     /// <inheritdoc />
     public async ValueTask StopAsync(CancellationToken cancellationToken)
     {
-        IExtensionHostBridge13? bridge;
+        IExtensionHostBridge14? bridge;
         IExtensionRegistration? registration;
         SvchostApiHandler? apiHandler;
         ServiceLogRecorder? logRecorder;
@@ -342,8 +358,8 @@ public sealed partial class SvchostEntry : IExtensionEntry
 
         if (registration is not null)
         {
-            registration.TryUnregisterHandler(SvchostApiHandler.StableHandlerId);
-            registration.TryUnregisterHandler(WebuiHandler.StableHandlerId);
+            UnregisterHandler(bridge, registration, SvchostApiHandler.StableHandlerId);
+            UnregisterHandler(bridge, registration, WebuiHandler.StableHandlerId);
         }
 
         try
@@ -374,6 +390,38 @@ public sealed partial class SvchostEntry : IExtensionEntry
         }
     }
 
+    private static void UnregisterHandler(
+        IExtensionHostBridge14 bridge,
+        IExtensionRegistration registration,
+        string handlerId) =>
+        ReportRegistrationFailure(bridge, registration.TryUnregisterHandler(handlerId), "unregister", handlerId);
+
+    private static void ReportRegistrationFailure(
+        IExtensionHostBridge14 bridge,
+        ExtensionRegistrationResult result,
+        string operation,
+        string handlerId)
+    {
+        if (result is ExtensionRegistrationFailureResult failure)
+        {
+            WriteContractFailureBestEffort(
+                bridge,
+                $"Handler '{handlerId}' {operation} failed with {failure.Code}: {failure.Detail.Message}");
+        }
+    }
+
+    private static void WriteContractFailureBestEffort(IExtensionHostBridge14 bridge, string message)
+    {
+        try
+        {
+            bridge.LogWriter.WriteText(ExtensionLogLevel.Warning, message);
+        }
+        catch (Exception)
+        {
+            // Failure diagnostics must not change startup or cleanup outcomes.
+        }
+    }
+
     private async ValueTask InitialReconcileAsync(CancellationToken cancellationToken)
     {
         try
@@ -392,7 +440,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
         }
         catch (Exception exception)
         {
-            IExtensionHostBridge13? bridge;
+            IExtensionHostBridge14? bridge;
             lock (_lifecycleGate)
             {
                 bridge = _bridge;

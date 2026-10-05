@@ -36,7 +36,9 @@ public sealed partial class ApiKeyService
         if (string.IsNullOrWhiteSpace(newKey) || newKey.Length < MinimumKeyLength)
         {
             return ConfigurationWriteResult.Failure(
-                new ConfigurationError(ConfigurationErrorCode.Validation));
+                new ConfigurationError(
+                    ConfigurationErrorCode.Validation,
+                    $"The API key must contain at least {MinimumKeyLength} characters and cannot be blank."));
         }
 
         lock (_stateGate)
@@ -44,7 +46,7 @@ public sealed partial class ApiKeyService
             if (_readonly)
             {
                 return ConfigurationWriteResult.Failure(
-                    new ConfigurationError(ConfigurationErrorCode.Unsupported));
+                    new ConfigurationError(ConfigurationErrorCode.Unsupported, "Extension settings are read-only."));
             }
         }
 

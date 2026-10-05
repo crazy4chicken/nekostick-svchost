@@ -466,6 +466,35 @@ public sealed class SettingsApiTests
         Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
     }
 
+    [Theory]
+    [InlineData(ConfigurationErrorCode.Validation, 422, "validation")]
+    [InlineData(ConfigurationErrorCode.ConcurrencyConflict, 409, "conflict")]
+    [InlineData(ConfigurationErrorCode.NotFound, 404, "not_found")]
+    [InlineData(ConfigurationErrorCode.Unsupported, 403, "forbidden")]
+    [InlineData(ConfigurationErrorCode.StorageUnavailable, 502, "backend_unavailable")]
+    public async Task Put_preserves_host_failure_reason_and_stable_error_shape(
+        ConfigurationErrorCode failureCode,
+        int statusCode,
+        string localCode)
+    {
+        using var fixture = await CreateFixtureAsync();
+        const string reason = "The host rejected this settings operation: exact detail.";
+        fixture.ConfigurationApi.WriteFailure = ConfigurationWriteResult.Failure(
+            new ConfigurationError(failureCode, reason));
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", "{\"releaseProviders\":{}}"),
+            CancellationToken.None);
+
+        Assert.Equal(statusCode, response.StatusCode);
+        using var document = await ReadJsonAsync(response);
+        var error = Assert.Single(document.RootElement.EnumerateObject());
+        Assert.Equal("error", error.Name);
+        Assert.Equal(new[] { "code", "message" }, error.Value.EnumerateObject().Select(property => property.Name));
+        Assert.Equal(localCode, error.Value.GetProperty("code").GetString());
+        Assert.Equal(reason, error.Value.GetProperty("message").GetString());
+    }
+
     private static Dictionary<string, ReleaseProviderSettings> CreateReleaseProviders(params string[] mirrors) =>
         new(StringComparer.Ordinal)
         {
@@ -498,7 +527,7 @@ public sealed class SettingsApiTests
     {
         var configurationApi = new FakeConfigurationApi();
         var settingsStore = new SettingsStore(configurationApi);
-        var bridge = new FakeBridge { DataDirectory = dataDirectory };
+        var bridge = new FakeBridge { DataDirectory = dataDirectory ?? string.Empty };
         var apiKeyService = new ApiKeyService(settingsStore, bridge);
         if (initializeSettings)
         {

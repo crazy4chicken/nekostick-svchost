@@ -23,13 +23,13 @@ public sealed class SettingsModelTests
 
         Assert.False(result.IsSuccess);
         Assert.Contains(result.Errors, error => error.Code == Nekolla.Nekostick.Contracts.ConfigurationErrorCode.Validation);
+        Assert.Equal("The persisted settings schema is unsupported.", Assert.Single(result.Errors).Message);
     }
 
     [Fact]
     public async Task SettingsStore_treats_missing_settings_row_as_empty_document()
     {
-        // The host reports NotFound when the extension has no settings row yet (fresh node);
-        // the store must surface that as an empty document so initial settings can be created.
+        // NoSettings represents the fresh-install state; the initial write creates the document.
         var store = new SettingsStore(new FakeConfigurationApi());
 
         var result = await store.ReadSettingsAsync();
@@ -41,16 +41,44 @@ public sealed class SettingsModelTests
     }
 
     [Fact]
-    public async Task SettingsStore_treats_legacy_not_found_as_empty_document()
+    public async Task SettingsStore_does_not_treat_not_found_as_missing_settings()
     {
-        // Hosts older than API 1.4 report NotFound for a missing settings row.
         var store = new SettingsStore(
             new FakeConfigurationApi { MissingSettingsErrorCode = ConfigurationErrorCode.NotFound });
 
         var result = await store.ReadSettingsAsync();
 
-        Assert.True(result.IsSuccess);
-        Assert.Null(result.Value!.Settings);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ConfigurationErrorCode.NotFound, Assert.Single(result.Errors).Code);
+    }
+
+    [Fact]
+    public async Task SettingsStore_preserves_raw_json_validation_reason_without_writing()
+    {
+        var configurationApi = new FakeConfigurationApi();
+        var store = new SettingsStore(configurationApi);
+
+        var result = await store.WriteRawSettingsAsync(0, "[]");
+
+        var error = Assert.Single(result.Errors);
+        Assert.Equal(ConfigurationErrorCode.Validation, error.Code);
+        Assert.Equal("The settings document must be an object.", error.Message);
+        Assert.Equal(0, configurationApi.WriteSettingsCallCount);
+    }
+
+    [Fact]
+    public async Task SettingsStore_preserves_update_failure_reason_without_writing()
+    {
+        var configurationApi = new FakeConfigurationApi();
+        var store = new SettingsStore(configurationApi);
+        const string reason = "The selected configuration was removed.";
+
+        var result = await store.UpdateSettingsAsync(_ => throw new InvalidOperationException(reason));
+
+        var error = Assert.Single(result.Errors);
+        Assert.Equal(ConfigurationErrorCode.Validation, error.Code);
+        Assert.Equal(reason, error.Message);
+        Assert.Equal(0, configurationApi.WriteSettingsCallCount);
     }
 
     [Fact]

@@ -4,6 +4,7 @@ using System.Text.Json;
 using Nekolla.Nekostick.Contracts;
 using Nekostick.ServiceHost.Api;
 using Nekostick.ServiceHost.Compose;
+using Nekostick.ServiceHost.Logs;
 using Nekostick.ServiceHost.Settings;
 using Nekostick.ServiceHost.Sync;
 using Xunit;
@@ -124,6 +125,69 @@ public sealed class ServiceLogsApiTests
         finally
         {
             DeleteTempDirectory(dataDirectory);
+        }
+    }
+
+    [Fact]
+    public void Recorder_disables_unsupported_capture_once_and_preserves_host_detail()
+    {
+        var output = new FakeServiceOutputApi { FailureMessage = "The host log capture executor is disabled." };
+        var logger = new FakeLogger();
+        var writer = new FakeLogWriter();
+        var target = new ServiceLogTarget(Guid.CreateVersion7(), "api", "unused-log-directory");
+        using var recorder = new ServiceLogRecorder(output, logger, writer);
+
+        recorder.SyncTargets([target]);
+        recorder.SyncTargets([target]);
+
+        Assert.Single(output.Cursors);
+        Assert.Equal("service-output-unsupported", Assert.Single(logger.Entries).Code);
+        Assert.Contains($"Unsupported: {output.FailureMessage}", Assert.Single(writer.Entries).Message, StringComparison.Ordinal);
+        Assert.Null(recorder.SubscribeLiveLines(target.ServiceId, _ => { }));
+    }
+
+    [Fact]
+    public void Recorder_retries_invalid_cursor_from_latest_and_releases_subscription()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var output = new FakeServiceOutputApi { FailureMessage = "The cursor belongs to the previous host session." };
+            output.Results.Enqueue(ExtensionServiceLogCode.Subscribed);
+            output.Results.Enqueue(ExtensionServiceLogCode.InvalidCursor);
+            output.Results.Enqueue(ExtensionServiceLogCode.Subscribed);
+            var writer = new FakeLogWriter();
+            var target = new ServiceLogTarget(Guid.CreateVersion7(), "api", root);
+            using (var recorder = new ServiceLogRecorder(output, new FakeLogger(), writer))
+            {
+                recorder.SyncTargets([target]);
+                output.Sink!.OnEntry(new ExtensionServiceLogEntry(
+                    ExtensionServiceLogEntryKind.GenerationStarted,
+                    target.ServiceId,
+                    5,
+                    DateTimeOffset.UtcNow,
+                    processInstanceId: Guid.NewGuid(),
+                    attemptNumber: 1));
+                output.Sink.OnCompleted();
+                Assert.True(SpinWait.SpinUntil(() =>
+                {
+                    recorder.SyncTargets([target]);
+                    return output.Cursors.Count == 3;
+                }, TimeSpan.FromSeconds(5)));
+
+                Assert.Equal(new long?[] { null, 5, null }, output.Cursors);
+                Assert.Equal(2, output.Subscriptions.Count);
+                Assert.True(output.Subscriptions[0].Disposed);
+                Assert.False(output.Subscriptions[1].Disposed);
+                Assert.Contains(writer.Entries, item => item.Message.Contains($"InvalidCursor: {output.FailureMessage}", StringComparison.Ordinal));
+
+                recorder.SyncTargets([]);
+                Assert.All(output.Subscriptions, subscription => Assert.True(subscription.Disposed));
+            }
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
         }
     }
 

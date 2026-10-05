@@ -19,7 +19,7 @@ public sealed partial class SvchostEntry
 
         SettingsStore? settingsStore;
         ApiKeyService? apiKeyService;
-        IExtensionHostBridge13? bridge;
+        IExtensionHostBridge14? bridge;
         ResetDriftForcedReconcileBackoff();
         lock (_lifecycleGate)
         {
@@ -184,7 +184,7 @@ public sealed partial class SvchostEntry
         }
         catch (Exception exception)
         {
-            IExtensionHostBridge13? bridge;
+            IExtensionHostBridge14? bridge;
             lock (_lifecycleGate)
             {
                 bridge = _bridge;
@@ -223,7 +223,7 @@ public sealed partial class SvchostEntry
         }
     }
 
-    private void ObserveHostConfigurationVersion(IExtensionHostBridge13 bridge)
+    private void ObserveHostConfigurationVersion(IExtensionHostBridge14 bridge)
     {
         ExtensionHostInfoSnapshot hostInfo;
         try
@@ -239,7 +239,7 @@ public sealed partial class SvchostEntry
     }
 
     private void RecordObservedHostConfigurationVersion(
-        IExtensionHostBridge13 bridge,
+        IExtensionHostBridge14 bridge,
         long? publishedConfigurationVersion)
     {
         lock (_lifecycleGate)
@@ -299,7 +299,7 @@ public sealed partial class SvchostEntry
 
     private async ValueTask CheckConfigurationDriftAsync(CancellationToken cancellationToken)
     {
-        IExtensionHostBridge13? bridge;
+        IExtensionHostBridge14? bridge;
         SettingsStore? settingsStore;
         long? lastPublishedVersion;
         long? lastConsumedSettingsVersion;
@@ -384,7 +384,7 @@ public sealed partial class SvchostEntry
 
     private void ReportDriftFailure()
     {
-        IExtensionHostBridge13? bridge;
+        IExtensionHostBridge14? bridge;
         lock (_lifecycleGate)
         {
             bridge = _bridge;

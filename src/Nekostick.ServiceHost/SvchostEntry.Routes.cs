@@ -9,7 +9,7 @@ namespace Nekostick.ServiceHost;
 public sealed partial class SvchostEntry
 {
     private static async ValueTask<bool> UpsertHandlerRoutesAsync(
-        IExtensionHostBridge13 bridge,
+        IExtensionHostBridge14 bridge,
         SvchostRouteSettings routeSettings,
         CancellationToken cancellationToken)
     {
@@ -38,7 +38,7 @@ public sealed partial class SvchostEntry
     }
 
     private static async ValueTask<bool> RemoveStaleHandlerRoutesAsync(
-        IExtensionHostBridge13 bridge,
+        IExtensionHostBridge14 bridge,
         SvchostRouteSettings routeSettings,
         CancellationToken cancellationToken)
     {
@@ -47,6 +47,7 @@ public sealed partial class SvchostEntry
             var read = await bridge.ConfigurationApi.ReadAsync(cancellationToken).ConfigureAwait(false);
             if (!read.IsSuccess || read.Value is null)
             {
+                ReportConfigurationErrors(bridge, read.Errors, "read routes for cleanup");
                 return false;
             }
 
@@ -78,6 +79,7 @@ public sealed partial class SvchostEntry
                 return true;
             }
 
+            ReportConfigurationErrors(bridge, write.Errors, "remove stale handler routes");
             if (!write.Errors.Any(error => error.Code == ConfigurationErrorCode.ConcurrencyConflict))
             {
                 return false;
@@ -88,7 +90,7 @@ public sealed partial class SvchostEntry
     }
 
     private static async ValueTask<bool> UpsertRouteAsync(
-        IExtensionHostBridge13 bridge,
+        IExtensionHostBridge14 bridge,
         ExtensionRouteConfiguration route,
         CancellationToken cancellationToken)
     {
@@ -97,6 +99,7 @@ public sealed partial class SvchostEntry
             var read = await bridge.ConfigurationApi.ReadAsync(cancellationToken).ConfigureAwait(false);
             if (!read.IsSuccess || read.Value is null)
             {
+                ReportConfigurationErrors(bridge, read.Errors, "read routes for registration");
                 return false;
             }
 
@@ -110,6 +113,7 @@ public sealed partial class SvchostEntry
                 return true;
             }
 
+            ReportConfigurationErrors(bridge, write.Errors, $"upsert handler route '{route.Id}'");
             if (!write.Errors.Any(error => error.Code == ConfigurationErrorCode.ConcurrencyConflict))
             {
                 return false;
@@ -117,5 +121,18 @@ public sealed partial class SvchostEntry
         }
 
         return false;
+    }
+
+    private static void ReportConfigurationErrors(
+        IExtensionHostBridge14 bridge,
+        IEnumerable<ConfigurationError> errors,
+        string operation)
+    {
+        foreach (var error in errors)
+        {
+            WriteContractFailureBestEffort(
+                bridge,
+                $"Configuration operation '{operation}' failed with {error.Code}: {error.Message}");
+        }
     }
 }
