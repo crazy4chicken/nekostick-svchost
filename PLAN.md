@@ -146,7 +146,7 @@ Template forms in `args` and `env` values: `${PORT}`/`${HOST}` use dynamic launc
     logs/                                         # retained across document cleanup
 ```
 
-Each digest has a separate immutable artifact generation; installs never overwrite a committed generation. After Host removal commits, cleanup may delete unreferenced `artifacts` and `tmp`; `logs` and unrelated user data remain. Legacy `<root>/artifacts/<serviceName>` paths are collected only after no configuration, lock, Host service, or active runtime references them.
+Each digest has a separate immutable artifact generation; installs never overwrite a committed generation. After Host removal commits, cleanup may delete unreferenced `artifacts` and `tmp`; `logs` and unrelated user data remain. Legacy `<root>/artifacts/<serviceName>` paths are collected only after no configuration, lock, Host service, or active runtime references them. Content-addressed cleanup sweeps every `svchost` root that holds an `artifacts/sha256` store — including former roots no configuration maps to and roots without an active content-addressed service — and prunes generations that are neither referenced by a committed service nor pinned by a settings lock digest. For an active service, its older generations are pruned continuously by any committed reconcile only once supervisor telemetry confirms the committed process generation is running on this node (`Running` or `Starting` with `StartedAt` at or after the commit-stamped `UpdatedAt`); the generation in use stays protected by the Host service path and the lock digest, and reconciles that commit nothing skip disk cleanup entirely.
 
 `DataDirectory` 为空串 → sync 不可用, 上报 Degraded 并拒绝写类 API 调用.
 

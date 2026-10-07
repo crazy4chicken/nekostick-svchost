@@ -219,34 +219,83 @@ public sealed partial class Reconciler
             activeConfigRoots.Add(configRoot);
         }
 
-        foreach (var root in roots.Values)
+        // A Running/Starting process with StartedAt at or after the commit-stamped UpdatedAt is the committed
+        // generation on this node; its generation is inherently protected by referencedPaths and the persisted
+        // lock digest (source-failure services keep their lock digest), so older unreferenced generation
+        // directories of that service can be pruned continuously.
+        var confirmedRunningServiceDirectories = new HashSet<string>(PathComparer);
+        foreach (var service in services)
         {
-            if (!IsPathWithin(svchostRoot, root.ConfigRoot) ||
-                !IsPathWithoutReparsePoints(svchostRoot, root.ConfigRoot))
+            if (knownRetirementArray.Any(retirement => retirement.ServiceId == service.Id) ||
+                removedRetirementArray.Any(retirement => retirement.ServiceId == service.Id) ||
+                IsKnownInactive(runtimeById, service.Id) ||
+                !TryGetArtifactLocation(service.FileName, svchostRoot, out var location) ||
+                !location.IsContentAddressed ||
+                !runtimeById.TryGetValue(service.Id, out var runtime) ||
+                runtime.LifecycleState is not (ExtensionServiceLifecycleState.Running or
+                    ExtensionServiceLifecycleState.Starting) ||
+                runtime.StartedAt is not { } startedAt ||
+                startedAt < service.UpdatedAt)
             {
                 continue;
             }
 
-            var artifactRoot = Path.GetFullPath(Path.Combine(root.ConfigRoot, "artifacts"));
+            confirmedRunningServiceDirectories.Add(Path.GetFullPath(Path.Combine(
+                location.ConfigRoot,
+                "artifacts",
+                "sha256",
+                location.ServiceName)));
+        }
+
+        // Sweep every svchost root that holds a content-addressed store, including roots no configuration maps
+        // to, so generations left behind by former roots stay reachable; referenced and lock-pinned
+        // generations remain protected by the guards below.
+        var sweepRoots = new HashSet<string>(roots.Keys, PathComparer);
+        if (Directory.Exists(svchostRoot))
+        {
+            foreach (var candidateRoot in Directory.EnumerateDirectories(svchostRoot))
+            {
+                var fullCandidateRoot = Path.GetFullPath(candidateRoot);
+                if (!IsPathWithin(svchostRoot, fullCandidateRoot) ||
+                    !IsPathWithoutReparsePoints(svchostRoot, fullCandidateRoot) ||
+                    !Directory.Exists(Path.Combine(fullCandidateRoot, "artifacts", "sha256")))
+                {
+                    continue;
+                }
+
+                sweepRoots.Add(fullCandidateRoot);
+            }
+        }
+
+        foreach (var sweepRoot in sweepRoots)
+        {
+            if (!IsPathWithin(svchostRoot, sweepRoot) ||
+                !IsPathWithoutReparsePoints(svchostRoot, sweepRoot))
+            {
+                continue;
+            }
+
+            var artifactRoot = Path.GetFullPath(Path.Combine(sweepRoot, "artifacts"));
             var sha256Root = Path.Combine(artifactRoot, "sha256");
-            if (!IsPathWithin(root.ConfigRoot, artifactRoot) ||
-                !IsPathWithoutReparsePoints(root.ConfigRoot, artifactRoot))
+            if (!IsPathWithin(sweepRoot, artifactRoot) ||
+                !IsPathWithoutReparsePoints(sweepRoot, artifactRoot))
             {
                 continue;
             }
 
-            if (IsPathWithoutReparsePoints(root.ConfigRoot, sha256Root) && Directory.Exists(sha256Root))
+            if (IsPathWithoutReparsePoints(sweepRoot, sha256Root) && Directory.Exists(sha256Root))
             {
                 CollectContentAddressedArtifacts(
-                    root.ConfigRoot,
+                    sweepRoot,
                     sha256Root,
                     referencedPaths,
                     protectedGenerationDirectories,
                     protectedContentServiceDirectories,
-                    activeArtifactServiceDirectories);
+                    activeArtifactServiceDirectories,
+                    confirmedRunningServiceDirectories);
             }
 
-            if (!Directory.Exists(artifactRoot))
+            if (!roots.TryGetValue(sweepRoot, out var root) || !Directory.Exists(artifactRoot))
             {
                 continue;
             }
@@ -346,7 +395,8 @@ public sealed partial class Reconciler
         IReadOnlySet<string> referencedPaths,
         IReadOnlySet<string> protectedGenerationDirectories,
         IReadOnlySet<string> protectedContentServiceDirectories,
-        IReadOnlySet<string> activeArtifactServiceDirectories)
+        IReadOnlySet<string> activeArtifactServiceDirectories,
+        IReadOnlySet<string> confirmedRunningServiceDirectories)
     {
         foreach (var serviceDirectory in Directory.EnumerateDirectories(sha256Root))
         {
@@ -354,7 +404,8 @@ public sealed partial class Reconciler
             if (!IsPathWithin(sha256Root, fullServiceDirectory) ||
                 !IsPathWithoutReparsePoints(sha256Root, fullServiceDirectory) ||
                 protectedContentServiceDirectories.Contains(fullServiceDirectory) ||
-                activeArtifactServiceDirectories.Contains(fullServiceDirectory))
+                (activeArtifactServiceDirectories.Contains(fullServiceDirectory) &&
+                    !confirmedRunningServiceDirectories.Contains(fullServiceDirectory)))
             {
                 continue;
             }
@@ -365,7 +416,8 @@ public sealed partial class Reconciler
                 if (!IsPathWithin(fullServiceDirectory, fullGenerationDirectory) ||
                     !IsPathWithoutReparsePoints(fullServiceDirectory, fullGenerationDirectory) ||
                     protectedGenerationDirectories.Contains(fullGenerationDirectory) ||
-                    activeArtifactServiceDirectories.Contains(fullServiceDirectory) ||
+                    (activeArtifactServiceDirectories.Contains(fullServiceDirectory) &&
+                        !confirmedRunningServiceDirectories.Contains(fullServiceDirectory)) ||
                     referencedPaths.Any(path => IsPathWithinOrEqual(fullGenerationDirectory, path)))
                 {
                     continue;

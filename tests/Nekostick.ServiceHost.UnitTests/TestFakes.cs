@@ -345,7 +345,7 @@ internal class RecordingRestartSupervisorProxy : DispatchProxy
 
 internal class FixedRuntimeSupervisorProxy : DispatchProxy
 {
-    private ImmutableArray<ExtensionServiceRuntimeSnapshot> _snapshots;
+    public ImmutableArray<ExtensionServiceRuntimeSnapshot> Snapshots { get; set; }
 
     public int ReadCallCount { get; private set; }
     public int ResumeCallCount { get; private set; }
@@ -354,9 +354,26 @@ internal class FixedRuntimeSupervisorProxy : DispatchProxy
     internal static IExtensionSupervisorApi Create(params ExtensionServiceRuntimeSnapshot[] snapshots)
     {
         var supervisor = DispatchProxy.Create<IExtensionSupervisorApi, FixedRuntimeSupervisorProxy>();
-        ((FixedRuntimeSupervisorProxy)(object)supervisor)._snapshots = ImmutableArray.CreateRange(snapshots);
+        ((FixedRuntimeSupervisorProxy)(object)supervisor).Snapshots = ImmutableArray.CreateRange(snapshots);
         return supervisor;
     }
+
+    internal static ExtensionServiceRuntimeSnapshot CreateRuntimeSnapshot(
+        Guid serviceId,
+        ExtensionServiceLifecycleState state,
+        DateTimeOffset? startedAt = null) =>
+        new(
+            serviceId,
+            null,
+            startedAt,
+            null,
+            state,
+            ExtensionServiceHealthState.Unknown,
+            0,
+            0,
+            null,
+            null,
+            null);
 
     protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
     {
@@ -364,7 +381,7 @@ internal class FixedRuntimeSupervisorProxy : DispatchProxy
         {
             ReadCallCount++;
             return ValueTask.FromResult(ConfigurationReadResult<ImmutableArray<ExtensionServiceRuntimeSnapshot>>.Success(
-                _snapshots));
+                Snapshots));
         }
 
         if (targetMethod?.Name == nameof(IExtensionSupervisorApi.ResumeAsync))

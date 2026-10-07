@@ -179,4 +179,256 @@ public sealed partial class ReconcilerTests
             DeleteTempDirectory(root);
         }
     }
+
+    [Fact]
+    public async Task Reconcile_prunes_previous_generation_when_service_confirmed_running()
+    {
+        // Pruning is continuous: any committed reconcile prunes older unreferenced generations of a
+        // confirmed-running service; this scenario also changes the source, so the previous generation is
+        // pruned in the same post-commit pass.
+        var fixture = await CreateReusablePathFixtureAsync();
+        try
+        {
+            var serviceRoot = Path.Combine(fixture.DataDirectory, "svchost", "demo");
+            var supersededArtifactPath = GetContentAddressedArtifactPath(serviceRoot, "api", fixture.SourcePath);
+            var service = Assert.Single(fixture.Snapshot.Services);
+            var supervisorApi = FixedRuntimeSupervisorProxy.Create();
+            var supervisor = (FixedRuntimeSupervisorProxy)(object)supervisorApi;
+            var full = new FakeFullConfigurationApi(fixture.Snapshot)
+            {
+                BeforeReplace = _ => supervisor.Snapshots =
+                [
+                    FixedRuntimeSupervisorProxy.CreateRuntimeSnapshot(
+                        service.Id,
+                        ExtensionServiceLifecycleState.Running,
+                        DateTimeOffset.UtcNow)
+                ]
+            };
+            var configurationApi = new FakeConfigurationApi(ToExtensionSettings(fixture.Settings));
+            var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory, supervisorApi);
+
+            await File.WriteAllTextAsync(fixture.SourcePath, "api-v2");
+            var report = await reconciler.ReconcileAsync("test");
+
+            Assert.True(report.Succeeded);
+            var committedArtifactPath = Assert.Single(full.Snapshot.Services).FileName;
+            Assert.Equal(
+                GetContentAddressedArtifactPath(serviceRoot, "api", fixture.SourcePath),
+                committedArtifactPath);
+            Assert.False(Directory.Exists(Path.GetDirectoryName(supersededArtifactPath)));
+            Assert.True(Directory.Exists(Path.GetDirectoryName(committedArtifactPath)));
+            Assert.True(File.Exists(committedArtifactPath));
+        }
+        finally
+        {
+            DeleteTempDirectory(fixture.Root);
+        }
+    }
+
+    [Fact]
+    public async Task Reconcile_retains_superseded_generation_when_started_at_is_older_than_commit()
+    {
+        var fixture = await CreateReusablePathFixtureAsync();
+        try
+        {
+            var serviceRoot = Path.Combine(fixture.DataDirectory, "svchost", "demo");
+            var supersededArtifactPath = GetContentAddressedArtifactPath(serviceRoot, "api", fixture.SourcePath);
+            var service = Assert.Single(fixture.Snapshot.Services);
+            var supervisor = FixedRuntimeSupervisorProxy.Create(
+                FixedRuntimeSupervisorProxy.CreateRuntimeSnapshot(
+                    service.Id,
+                    ExtensionServiceLifecycleState.Running,
+                    service.UpdatedAt));
+            var full = new FakeFullConfigurationApi(fixture.Snapshot);
+            var configurationApi = new FakeConfigurationApi(ToExtensionSettings(fixture.Settings));
+            var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory, supervisor);
+
+            await File.WriteAllTextAsync(fixture.SourcePath, "api-v2");
+            var report = await reconciler.ReconcileAsync("test");
+
+            Assert.True(report.Succeeded);
+            var committedArtifactPath = Assert.Single(full.Snapshot.Services).FileName;
+            Assert.Equal(
+                GetContentAddressedArtifactPath(serviceRoot, "api", fixture.SourcePath),
+                committedArtifactPath);
+            Assert.True(Directory.Exists(Path.GetDirectoryName(supersededArtifactPath)));
+            Assert.True(Directory.Exists(Path.GetDirectoryName(committedArtifactPath)));
+            Assert.True(File.Exists(committedArtifactPath));
+        }
+        finally
+        {
+            DeleteTempDirectory(fixture.Root);
+        }
+    }
+
+    [Fact]
+    public async Task Reconcile_retains_superseded_generation_when_started_at_unknown()
+    {
+        var fixture = await CreateReusablePathFixtureAsync();
+        try
+        {
+            var serviceRoot = Path.Combine(fixture.DataDirectory, "svchost", "demo");
+            var supersededArtifactPath = GetContentAddressedArtifactPath(serviceRoot, "api", fixture.SourcePath);
+            var service = Assert.Single(fixture.Snapshot.Services);
+            var supervisor = FixedRuntimeSupervisorProxy.Create(
+                FixedRuntimeSupervisorProxy.CreateRuntimeSnapshot(
+                    service.Id,
+                    ExtensionServiceLifecycleState.Running));
+            var full = new FakeFullConfigurationApi(fixture.Snapshot);
+            var configurationApi = new FakeConfigurationApi(ToExtensionSettings(fixture.Settings));
+            var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory, supervisor);
+
+            await File.WriteAllTextAsync(fixture.SourcePath, "api-v2");
+            var report = await reconciler.ReconcileAsync("test");
+
+            Assert.True(report.Succeeded);
+            var committedArtifactPath = Assert.Single(full.Snapshot.Services).FileName;
+            Assert.Equal(
+                GetContentAddressedArtifactPath(serviceRoot, "api", fixture.SourcePath),
+                committedArtifactPath);
+            Assert.True(Directory.Exists(Path.GetDirectoryName(supersededArtifactPath)));
+            Assert.True(Directory.Exists(Path.GetDirectoryName(committedArtifactPath)));
+            Assert.True(File.Exists(committedArtifactPath));
+        }
+        finally
+        {
+            DeleteTempDirectory(fixture.Root);
+        }
+    }
+
+    [Fact]
+    public async Task Reconcile_prunes_stale_generation_without_source_change_when_service_confirmed_running()
+    {
+        var fixture = await CreateReusablePathFixtureAsync(changedSnapshot: true);
+        try
+        {
+            var serviceRoot = Path.Combine(fixture.DataDirectory, "svchost", "demo");
+            var artifactPath = GetContentAddressedArtifactPath(serviceRoot, "api", fixture.SourcePath);
+            var staleGenerationDirectory = Path.Combine(
+                serviceRoot,
+                "artifacts",
+                "sha256",
+                "api",
+                new string('a', 64));
+            Directory.CreateDirectory(staleGenerationDirectory);
+            await File.WriteAllTextAsync(Path.Combine(staleGenerationDirectory, "api"), "api-stale");
+            var service = Assert.Single(fixture.Snapshot.Services);
+            var supervisorApi = FixedRuntimeSupervisorProxy.Create();
+            var supervisor = (FixedRuntimeSupervisorProxy)(object)supervisorApi;
+            var full = new FakeFullConfigurationApi(fixture.Snapshot)
+            {
+                BeforeReplace = _ => supervisor.Snapshots =
+                [
+                    FixedRuntimeSupervisorProxy.CreateRuntimeSnapshot(
+                        service.Id,
+                        ExtensionServiceLifecycleState.Running,
+                        DateTimeOffset.UtcNow)
+                ]
+            };
+            var configurationApi = new FakeConfigurationApi(ToExtensionSettings(fixture.Settings));
+            var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory, supervisorApi);
+
+            var report = await reconciler.ReconcileAsync("test");
+
+            Assert.True(report.Succeeded);
+            var committedArtifactPath = Assert.Single(full.Snapshot.Services).FileName;
+            Assert.Equal(artifactPath, committedArtifactPath);
+            // The in-use generation stays protected by the Host service path and the lock digest; only the
+            // stale unreferenced generation is pruned.
+            Assert.False(Directory.Exists(staleGenerationDirectory));
+            Assert.True(Directory.Exists(Path.GetDirectoryName(artifactPath)));
+            Assert.True(File.Exists(artifactPath));
+        }
+        finally
+        {
+            DeleteTempDirectory(fixture.Root);
+        }
+    }
+
+    [Fact]
+    public async Task Reconcile_sweeps_inactive_and_former_roots_after_commit()
+    {
+        var fixture = await CreateReusablePathFixtureAsync(changedSnapshot: true);
+        try
+        {
+            var serviceRoot = Path.Combine(fixture.DataDirectory, "svchost", "demo");
+            var artifactPath = GetContentAddressedArtifactPath(serviceRoot, "api", fixture.SourcePath);
+            var inactiveRoot = Path.Combine(fixture.DataDirectory, "svchost", "legacy");
+            var pinnedArtifactPath = GetContentAddressedArtifactPath(inactiveRoot, "api", fixture.SourcePath);
+            var inactiveStaleDirectory = Path.Combine(
+                inactiveRoot,
+                "artifacts",
+                "sha256",
+                "api",
+                new string('b', 64));
+            var formerRoot = Path.Combine(fixture.DataDirectory, "svchost", "former");
+            var formerStaleDirectory = Path.Combine(
+                formerRoot,
+                "artifacts",
+                "sha256",
+                "api",
+                new string('c', 64));
+            Directory.CreateDirectory(Path.GetDirectoryName(pinnedArtifactPath)!);
+            File.Copy(fixture.SourcePath, pinnedArtifactPath);
+            foreach (var staleDirectory in new[] { inactiveStaleDirectory, formerStaleDirectory })
+            {
+                Directory.CreateDirectory(staleDirectory);
+                await File.WriteAllTextAsync(Path.Combine(staleDirectory, "api"), "api-stale");
+            }
+
+            var inactiveSettings = CreatePathSettings(
+                fixture.SourcePath,
+                Guid.CreateVersion7(),
+                stopped: ["api"]);
+            var inactiveServiceId = inactiveSettings.Configs["demo"]!.Lock.Services["api"].ServiceId;
+            var settings = CloneSettingsWithInactiveRoot(fixture.Settings, inactiveSettings.Configs["demo"]);
+            var service = Assert.Single(fixture.Snapshot.Services);
+            var supervisorApi = FixedRuntimeSupervisorProxy.Create();
+            var supervisor = (FixedRuntimeSupervisorProxy)(object)supervisorApi;
+            var full = new FakeFullConfigurationApi(fixture.Snapshot)
+            {
+                BeforeReplace = _ => supervisor.Snapshots =
+                [
+                    FixedRuntimeSupervisorProxy.CreateRuntimeSnapshot(
+                        service.Id,
+                        ExtensionServiceLifecycleState.Running,
+                        DateTimeOffset.UtcNow),
+                    FixedRuntimeSupervisorProxy.CreateRuntimeSnapshot(
+                        inactiveServiceId,
+                        ExtensionServiceLifecycleState.Disabled)
+                ]
+            };
+            var configurationApi = new FakeConfigurationApi(ToExtensionSettings(settings));
+            var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory, supervisorApi);
+
+            var report = await reconciler.ReconcileAsync("test");
+
+            Assert.True(report.Succeeded);
+            Assert.False(Directory.Exists(inactiveStaleDirectory));
+            Assert.False(Directory.Exists(formerStaleDirectory));
+            Assert.True(Directory.Exists(Path.GetDirectoryName(pinnedArtifactPath)));
+            Assert.True(File.Exists(pinnedArtifactPath));
+            Assert.True(File.Exists(artifactPath));
+        }
+        finally
+        {
+            DeleteTempDirectory(fixture.Root);
+        }
+    }
+
+    private static SvchostSettings CloneSettingsWithInactiveRoot(
+        SvchostSettings settings,
+        SvchostConfigSettings inactiveConfig)
+    {
+        var configs = new Dictionary<string, SvchostConfigSettings>(settings.Configs, StringComparer.Ordinal)
+        {
+            ["legacy"] = inactiveConfig
+        };
+        return new SvchostSettings(
+            settings.ApiKey,
+            settings.Routes,
+            configs,
+            settings.ReleaseProviders,
+            settings.Retiring);
+    }
 }
