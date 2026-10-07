@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Nekolla.Nekostick.Contracts;
@@ -106,6 +107,67 @@ public sealed class SettingsApiTests
         Assert.False(lastSync.GetProperty("succeeded").GetBoolean());
         Assert.Equal(error, lastSync.GetProperty("error").GetString());
         Assert.Equal("source", lastSync.GetProperty("errorKind").GetString());
+    }
+
+    [Fact]
+    public async Task Config_list_projects_report_warnings_node_local_and_notes()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
+        {
+            settings.Configs["demo"] = new SvchostConfigSettings("services: {}");
+            return settings;
+        });
+        Assert.True(setup.IsSuccess);
+
+        var service = new ServiceSyncReport(
+            "demo",
+            "api",
+            false,
+            false,
+            Guid.CreateVersion7(),
+            ImmutableArray<Guid>.Empty,
+            "The source could not be resolved.",
+            SyncErrorCode.SourceFailed)
+        {
+            Decision = ServiceDecision.Preserved,
+            Warnings = ImmutableArray.Create("source is not pinned"),
+            NodeLocal = true
+        };
+        fixture.Handler.RecordReport(new SyncReport(
+            false,
+            true,
+            DateTimeOffset.UtcNow,
+            ImmutableArray.Create(service),
+            null,
+            "Synchronization failed")
+        {
+            FailureCode = SyncErrorCode.SourceFailed,
+            Notes = ImmutableArray.Create("retained deployed service")
+        });
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("GET", string.Empty, requestPath: "/svchost/api/configs"),
+            CancellationToken.None);
+
+        Assert.Equal(200, response.StatusCode);
+        using var document = await ReadJsonAsync(response);
+        var config = Assert.Single(
+            document.RootElement.EnumerateArray(),
+            item => item.GetProperty("name").GetString() == "demo");
+        var lastSync = config.GetProperty("lastSync");
+        Assert.False(lastSync.GetProperty("succeeded").GetBoolean());
+        Assert.True(lastSync.GetProperty("dataDirectoryAvailable").GetBoolean());
+        Assert.Equal("source", lastSync.GetProperty("errorKind").GetString());
+        Assert.Equal(
+            "retained deployed service",
+            Assert.Single(lastSync.GetProperty("notes").EnumerateArray()).GetString());
+        var servicePayload = Assert.Single(lastSync.GetProperty("services").EnumerateArray());
+        Assert.Equal("preserved", servicePayload.GetProperty("decision").GetString());
+        Assert.Equal(
+            "source is not pinned",
+            Assert.Single(servicePayload.GetProperty("warnings").EnumerateArray()).GetString());
+        Assert.True(servicePayload.GetProperty("nodeLocal").GetBoolean());
     }
 
     [Fact]
@@ -217,6 +279,78 @@ public sealed class SettingsApiTests
     }
 
     [Fact]
+    public async Task Put_unchanged_config_yaml_does_not_write_or_bump_Host_versions()
+    {
+        using var fixture = await CreateFixtureAsync(dataDirectory: Path.GetTempPath());
+        var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
+        {
+            settings.Configs["demo"] = new SvchostConfigSettings("services: {}");
+            return settings;
+        });
+        Assert.True(setup.IsSuccess);
+
+        var initialSync = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("POST", string.Empty, requestPath: "/svchost/api/configs/demo/sync"),
+            CancellationToken.None);
+        Assert.Equal(200, initialSync.StatusCode);
+
+        var currentSettings = fixture.ConfigurationApi.CurrentSettings!;
+        string hostSettingsJson;
+        using (var document = JsonDocument.Parse(currentSettings.SettingsJson!))
+        {
+            hostSettingsJson = JsonSerializer.Serialize(
+                document.RootElement,
+                new JsonSerializerOptions { WriteIndented = true });
+            var hostSettings = new ExtensionSettingsConfiguration(
+                currentSettings.ExtensionId,
+                currentSettings.SchemaVersion,
+                hostSettingsJson,
+                currentSettings.Version);
+            fixture.ConfigurationApi.UpdateSettings(hostSettings);
+
+            var snapshot = fixture.FullConfiguration.Snapshot;
+            fixture.FullConfiguration.Snapshot = new HostConfigurationSnapshot(
+                snapshot.Version,
+                snapshot.GlobalSettings,
+                snapshot.Routes,
+                snapshot.Services,
+                snapshot.ExtensionRecords,
+                snapshot.ExtensionSettings
+                    .Select(settings => settings.ExtensionId == hostSettings.ExtensionId ? hostSettings : settings)
+                    .ToImmutableArray());
+        }
+
+        var writesBefore = fixture.ConfigurationApi.WriteSettingsCallCount;
+        var settingsVersion = fixture.ConfigurationApi.CurrentSettings!.Version;
+        var configurationVersion = fixture.FullConfiguration.Snapshot.Version;
+        var replaceCount = fixture.FullConfiguration.ReplaceCallCount;
+
+        var putResponse = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest(
+                "PUT",
+                "{\"yaml\":\"services: {}\"}",
+                requestPath: "/svchost/api/configs/demo"),
+            CancellationToken.None);
+
+        Assert.Equal(200, putResponse.StatusCode);
+        Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
+        Assert.Equal(settingsVersion, fixture.ConfigurationApi.CurrentSettings!.Version);
+        Assert.Equal(configurationVersion, fixture.FullConfiguration.Snapshot.Version);
+        Assert.Equal(replaceCount, fixture.FullConfiguration.ReplaceCallCount);
+        Assert.Equal(hostSettingsJson, fixture.ConfigurationApi.CurrentSettings!.SettingsJson);
+
+        var manualSync = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("POST", string.Empty, requestPath: "/svchost/api/configs/demo/sync"),
+            CancellationToken.None);
+
+        Assert.Equal(200, manualSync.StatusCode);
+        Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
+        Assert.Equal(settingsVersion, fixture.ConfigurationApi.CurrentSettings!.Version);
+        Assert.Equal(configurationVersion, fixture.FullConfiguration.Snapshot.Version);
+        Assert.Equal(replaceCount, fixture.FullConfiguration.ReplaceCallCount);
+    }
+
+    [Fact]
     public async Task Service_action_rejects_reserved_global_config_name()
     {
         using var fixture = await CreateFixtureAsync();
@@ -232,7 +366,99 @@ public sealed class SettingsApiTests
     }
 
     [Fact]
-    public async Task Delete_config_cleans_only_its_scoped_artifacts()
+    public async Task Service_restart_uses_node_local_Host_api_without_reconciliation()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var serviceId = Guid.CreateVersion7();
+        var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
+        {
+            settings.Configs["demo"] = new SvchostConfigSettings(
+                "serviceScope: document\nservices:\n  api:\n    source:\n      path: /tmp/api",
+                new LockModel
+                {
+                    Services = new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal)
+                    {
+                        ["api"] = new LockServiceEntry(new LockSource(), serviceId)
+                    }
+                });
+            return settings;
+        });
+        Assert.True(setup.IsSuccess);
+
+        var supervisor = RecordingRestartSupervisorProxy.Create(out var recordingSupervisor);
+        fixture.Bridge.SupervisorApi = supervisor;
+        var writesBefore = fixture.ConfigurationApi.WriteSettingsCallCount;
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest(
+                "POST",
+                string.Empty,
+                requestPath: "/svchost/api/services/demo/api/restart"),
+            CancellationToken.None);
+
+        Assert.Equal(200, response.StatusCode);
+        Assert.Equal(1, recordingSupervisor.RestartCallCount);
+        Assert.Equal(serviceId, recordingSupervisor.ServiceId);
+        Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
+        Assert.Equal(0, fixture.FullConfiguration.ReplaceCallCount);
+        using var document = await ReadJsonAsync(response);
+        Assert.Equal("restart", document.RootElement.GetProperty("action").GetString());
+        Assert.True(document.RootElement.GetProperty("succeeded").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("asynchronous").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Service_restart_returns_Host_validation_as_HTTP_200_without_changing_desired_state()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var serviceId = Guid.CreateVersion7();
+        var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
+        {
+            settings.Configs["demo"] = new SvchostConfigSettings(
+                "serviceScope: document\nservices:\n  api:\n    source:\n      path: /tmp/api",
+                new LockModel
+                {
+                    Services = new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal)
+                    {
+                        ["api"] = new LockServiceEntry(new LockSource(), serviceId)
+                    }
+                },
+                ["api"]);
+            return settings;
+        });
+        Assert.True(setup.IsSuccess);
+
+        var supervisor = RecordingRestartSupervisorProxy.Create(out var recordingSupervisor);
+        recordingSupervisor.Result = ConfigurationWriteResult.Failure(
+            new ConfigurationError(ConfigurationErrorCode.Validation, "The service is administratively disabled."));
+        fixture.Bridge.SupervisorApi = supervisor;
+        var writesBefore = fixture.ConfigurationApi.WriteSettingsCallCount;
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest(
+                "POST",
+                string.Empty,
+                requestPath: "/svchost/api/services/demo/api/restart"),
+            CancellationToken.None);
+
+        Assert.Equal(200, response.StatusCode);
+        Assert.Equal(1, recordingSupervisor.RestartCallCount);
+        Assert.Equal(serviceId, recordingSupervisor.ServiceId);
+        Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
+        Assert.Equal(0, fixture.FullConfiguration.ReplaceCallCount);
+        using var document = await ReadJsonAsync(response);
+        Assert.Equal("restart", document.RootElement.GetProperty("action").GetString());
+        Assert.False(document.RootElement.GetProperty("succeeded").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("asynchronous").GetBoolean());
+        Assert.Equal(
+            "The service is administratively disabled.",
+            document.RootElement.GetProperty("message").GetString());
+
+        var persisted = await fixture.SettingsStore.ReadSettingsAsync();
+        Assert.True(persisted.IsSuccess);
+        Assert.Contains("api", persisted.Value!.Settings!.Configs["demo"].Stopped);
+    }
+
+    [Fact]
+    public async Task Delete_config_commits_retirement_and_defers_artifact_cleanup_until_Host_removal()
     {
         var dataDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -241,78 +467,80 @@ public sealed class SettingsApiTests
         Directory.CreateDirectory(dataDirectory);
         try
         {
+            var serviceId = Guid.CreateVersion7();
+            const string artifactContent = "api artifact";
+            var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(artifactContent)))
+                .ToLowerInvariant();
+            var serviceRoot = Path.Combine(dataDirectory, "svchost", "global");
+            var artifactPath = Path.Combine(serviceRoot, "artifacts", "sha256", "api", digest, "api");
+            Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+            await File.WriteAllTextAsync(artifactPath, artifactContent);
+            var logPath = Path.Combine(serviceRoot, "logs", "api.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+            await File.WriteAllTextAsync(logPath, "retained log");
+
             using var fixture = await CreateFixtureAsync(dataDirectory: dataDirectory);
             var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
             {
                 settings.Configs["global-config"] = new SvchostConfigSettings(
-                    "serviceScope: global\nservices:\n  api:\n    source: { path: /tmp/api }\n  own-only:\n    source: { path: /tmp/own-only }",
+                    "serviceScope: global\nservices:\n  api:\n    source: { path: /tmp/api }",
                     new LockModel
                     {
                         Services = new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal)
                         {
-                            ["locked-only"] = new LockServiceEntry()
+                            ["api"] = new LockServiceEntry(
+                                new LockSource { Kind = "path", Path = "/tmp/api", Sha256 = digest },
+                                serviceId)
                         }
                     });
-                settings.Configs["global-sibling"] = new SvchostConfigSettings(
-                    "serviceScope: global\nservices:\n  api:\n    source: { path: /tmp/sibling-api }\n  sibling:\n    source: { path: /tmp/sibling }");
-                settings.Configs["legacy-global"] = new SvchostConfigSettings(
-                    "services: [",
-                    new LockModel
-                    {
-                        Services = new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal)
-                        {
-                            ["legacy-only"] = new LockServiceEntry()
-                        }
-                    });
-                settings.Configs["document-config"] = new SvchostConfigSettings(
-                    "serviceScope: document\nservices: {}");
                 return settings;
             });
             Assert.True(setup.IsSuccess);
 
-            var artifactsDirectory = Path.Combine(dataDirectory, "svchost", "global", "artifacts");
-            async Task CreateArtifactAsync(string serviceName, string content)
-            {
-                var serviceDirectory = Path.Combine(artifactsDirectory, serviceName);
-                Directory.CreateDirectory(serviceDirectory);
-                await File.WriteAllTextAsync(Path.Combine(serviceDirectory, "payload"), content);
-            }
+            var now = DateTimeOffset.UtcNow;
+            var service = new ServiceConfiguration(
+                serviceId,
+                true,
+                artifactPath,
+                ImmutableArray<string>.Empty,
+                serviceRoot,
+                ImmutableDictionary<string, string>.Empty,
+                ServiceStartMode.Eager,
+                ServiceRestartPolicy.OnFailure,
+                new ServiceHealthCheckConfiguration(ServiceHealthCheckType.Process, null, TimeSpan.FromSeconds(5)),
+                now,
+                now,
+                3);
+            var snapshot = fixture.FullConfiguration.Snapshot;
+            fixture.FullConfiguration.Snapshot = new HostConfigurationSnapshot(
+                snapshot.Version,
+                snapshot.GlobalSettings,
+                snapshot.Routes,
+                ImmutableArray.Create(service),
+                snapshot.ExtensionRecords,
+                snapshot.ExtensionSettings);
 
-            await CreateArtifactAsync("api", "sibling-api");
-            await CreateArtifactAsync("own-only", "owned");
-            await CreateArtifactAsync("locked-only", "locked");
-            await CreateArtifactAsync("sibling", "sibling");
-            await CreateArtifactAsync("legacy-only", "legacy");
-            var documentRoot = Path.Combine(dataDirectory, "svchost", "document-config");
-            Directory.CreateDirectory(documentRoot);
-            await File.WriteAllTextAsync(Path.Combine(documentRoot, "payload"), "document");
-
-            var globalDelete = await fixture.Handler.HandleStreamingAsync(
+            var response = await fixture.Handler.HandleStreamingAsync(
                 CreateRequest("DELETE", string.Empty, requestPath: "/svchost/api/configs/global-config"),
                 CancellationToken.None);
-            Assert.Equal(200, globalDelete.StatusCode);
-            Assert.False(Directory.Exists(Path.Combine(artifactsDirectory, "own-only")));
-            Assert.False(Directory.Exists(Path.Combine(artifactsDirectory, "locked-only")));
-            Assert.Equal(
-                "sibling-api",
-                await File.ReadAllTextAsync(Path.Combine(artifactsDirectory, "api", "payload")));
-            Assert.True(File.Exists(Path.Combine(artifactsDirectory, "sibling", "payload")));
-            Assert.True(File.Exists(Path.Combine(artifactsDirectory, "legacy-only", "payload")));
-            Assert.True(Directory.Exists(Path.Combine(dataDirectory, "svchost", "global")));
 
-            var legacyDelete = await fixture.Handler.HandleStreamingAsync(
-                CreateRequest("DELETE", string.Empty, requestPath: "/svchost/api/configs/legacy-global"),
-                CancellationToken.None);
-            Assert.Equal(200, legacyDelete.StatusCode);
-            Assert.False(Directory.Exists(Path.Combine(artifactsDirectory, "legacy-only")));
-            Assert.True(File.Exists(Path.Combine(artifactsDirectory, "sibling", "payload")));
+            Assert.Equal(200, response.StatusCode);
+            using var document = await ReadJsonAsync(response);
+            var report = document.RootElement.GetProperty("report");
+            Assert.False(report.GetProperty("succeeded").GetBoolean());
+            Assert.Equal("removalPending", report.GetProperty("errorKind").GetString());
+            var pendingService = Assert.Single(report.GetProperty("services").EnumerateArray());
+            Assert.Equal("removalPending", pendingService.GetProperty("decision").GetString());
 
-            var documentDelete = await fixture.Handler.HandleStreamingAsync(
-                CreateRequest("DELETE", string.Empty, requestPath: "/svchost/api/configs/document-config"),
-                CancellationToken.None);
-            Assert.Equal(200, documentDelete.StatusCode);
-            Assert.False(Directory.Exists(documentRoot));
-            Assert.True(File.Exists(Path.Combine(artifactsDirectory, "sibling", "payload")));
+            var persisted = await fixture.SettingsStore.ReadSettingsAsync();
+            Assert.True(persisted.IsSuccess);
+            var persistedSettings = persisted.Value!.Settings!;
+            Assert.False(persistedSettings.Configs.ContainsKey("global-config"));
+            Assert.Equal(serviceId, Assert.Single(persistedSettings.Retiring).ServiceId);
+            Assert.False(Assert.Single(fixture.FullConfiguration.Snapshot.Services).Enabled);
+            Assert.Equal(1, fixture.FullConfiguration.ReplaceCallCount);
+            Assert.Equal(artifactContent, await File.ReadAllTextAsync(artifactPath));
+            Assert.Equal("retained log", await File.ReadAllTextAsync(logPath));
         }
         finally
         {
@@ -483,7 +711,7 @@ public sealed class SettingsApiTests
             new ConfigurationError(failureCode, reason));
 
         var response = await fixture.Handler.HandleStreamingAsync(
-            CreateRequest("PUT", "{\"releaseProviders\":{}}"),
+            CreateRequest("PUT", "{\"releaseProviders\":{\"github\":{\"mirrors\":[\"https://mirror.example/\"]}}}"),
             CancellationToken.None);
 
         Assert.Equal(statusCode, response.StatusCode);
@@ -527,7 +755,12 @@ public sealed class SettingsApiTests
     {
         var configurationApi = new FakeConfigurationApi();
         var settingsStore = new SettingsStore(configurationApi);
-        var bridge = new FakeBridge { DataDirectory = dataDirectory ?? string.Empty };
+        var initializationFullConfiguration = new FakeFullConfigurationApi(CreateHostConfigurationSnapshot());
+        var bridge = new FakeBridge
+        {
+            DataDirectory = dataDirectory ?? string.Empty,
+            FullConfiguration = initializationFullConfiguration
+        };
         var apiKeyService = new ApiKeyService(settingsStore, bridge);
         if (initializeSettings)
         {
@@ -544,18 +777,34 @@ public sealed class SettingsApiTests
         }
 
         var composeParser = new ComposeFileParser();
+        var fullConfiguration = new FakeFullConfigurationApi(CreateHostConfigurationSnapshot());
+        if (configurationApi.CurrentSettings is { } currentSettings)
+        {
+            var snapshot = fullConfiguration.Snapshot;
+            fullConfiguration.Snapshot = new HostConfigurationSnapshot(
+                snapshot.Version,
+                snapshot.GlobalSettings,
+                snapshot.Routes,
+                snapshot.Services,
+                snapshot.ExtensionRecords,
+                snapshot.ExtensionSettings.Add(currentSettings));
+        }
+
+        configurationApi.SettingsWritten = fullConfiguration.RecordSettingsWrite;
+        fullConfiguration.SettingsCommitted = configurationApi.UpdateSettings;
         var reconciler = new Reconciler(
             settingsStore,
             composeParser,
             new SourceResolver(),
-            new FakeFullConfigurationApi(CreateHostConfigurationSnapshot()));
+            fullConfiguration,
+            dataDirectory);
         var handler = new SvchostApiHandler(
             apiKeyService,
             settingsStore,
             composeParser,
             reconciler,
             bridge);
-        return new SettingsApiFixture(handler, settingsStore, configurationApi);
+        return new SettingsApiFixture(handler, settingsStore, configurationApi, bridge, fullConfiguration);
     }
 
     private static HostConfigurationSnapshot CreateHostConfigurationSnapshot() =>
@@ -572,11 +821,15 @@ public sealed class SettingsApiTests
         public SettingsApiFixture(
             SvchostApiHandler handler,
             SettingsStore settingsStore,
-            FakeConfigurationApi configurationApi)
+            FakeConfigurationApi configurationApi,
+            FakeBridge bridge,
+            FakeFullConfigurationApi fullConfiguration)
         {
             Handler = handler;
             SettingsStore = settingsStore;
             ConfigurationApi = configurationApi;
+            Bridge = bridge;
+            FullConfiguration = fullConfiguration;
         }
 
         public SvchostApiHandler Handler { get; }
@@ -584,6 +837,10 @@ public sealed class SettingsApiTests
         public SettingsStore SettingsStore { get; }
 
         public FakeConfigurationApi ConfigurationApi { get; }
+
+        public FakeBridge Bridge { get; }
+
+        public FakeFullConfigurationApi FullConfiguration { get; }
 
         public void Dispose() => Handler.Dispose();
     }

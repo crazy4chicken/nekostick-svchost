@@ -29,7 +29,7 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
     private readonly ComposeFileParser _composeFileParser;
     private readonly Reconciler _reconciler;
     private readonly IExtensionHostBridge14 _bridge;
-    private readonly Func<IEnumerable<Guid>, IEnumerable<Guid>, string, CancellationToken, ValueTask<SyncReport>> _reconcile;
+    private readonly Func<string, CancellationToken, ValueTask<SyncReport>> _reconcile;
     private readonly Action<SyncReport>? _syncObserver;
     private readonly SemaphoreSlim _mutationGate = new(1, 1);
     private readonly object _reportGate = new();
@@ -44,7 +44,7 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
         ComposeFileParser composeFileParser,
         Reconciler reconciler,
         IExtensionHostBridge14 bridge,
-        Func<IEnumerable<Guid>, IEnumerable<Guid>, string, CancellationToken, ValueTask<SyncReport>>? reconcile = null,
+        Func<string, CancellationToken, ValueTask<SyncReport>>? reconcile = null,
         Action<SyncReport>? syncObserver = null,
         ServiceLogRecorder? logRecorder = null)
     {
@@ -53,8 +53,8 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
         _composeFileParser = composeFileParser ?? throw new ArgumentNullException(nameof(composeFileParser));
         _reconciler = reconciler ?? throw new ArgumentNullException(nameof(reconciler));
         _bridge = bridge ?? throw new ArgumentNullException(nameof(bridge));
-        _reconcile = reconcile ?? ((services, routes, trigger, cancellationToken) =>
-            _reconciler.ReconcileAsync(services, routes, trigger, cancellationToken));
+        _reconcile = reconcile ?? ((trigger, cancellationToken) =>
+            _reconciler.ReconcileAsync(trigger, cancellationToken));
         _syncObserver = syncObserver;
         _logRecorder = logRecorder;
     }
@@ -215,15 +215,13 @@ public sealed partial class SvchostApiHandler : IExtensionStreamingHandler, IDis
     }
 
     private async ValueTask<SyncReport> ReconcileAndRememberAsync(
-        IEnumerable<Guid> serviceIds,
-        IEnumerable<Guid> routeIds,
         string trigger,
         CancellationToken cancellationToken)
     {
         SyncReport report;
         try
         {
-            report = await _reconcile(serviceIds, routeIds, trigger, cancellationToken).ConfigureAwait(false);
+            report = await _reconcile(trigger, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

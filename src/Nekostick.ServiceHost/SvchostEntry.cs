@@ -426,11 +426,7 @@ public sealed partial class SvchostEntry : IExtensionEntry
     {
         try
         {
-            var report = await ReconcileTrackedAsync(
-                    Array.Empty<Guid>(),
-                    Array.Empty<Guid>(),
-                    "startup",
-                    cancellationToken)
+            var report = await ReconcileTrackedAsync("startup", cancellationToken)
                 .ConfigureAwait(false);
             RecordSyncReport(report);
         }

@@ -6,6 +6,7 @@ import type {
   LogPage,
   ManagedService,
   ServiceDeclSummary,
+  ServiceDecision,
   ServiceSyncResult,
   SettingsResponse,
   SettingsUpdate,
@@ -115,6 +116,20 @@ function normalizeServices(raw: unknown): ServiceDeclSummary[] {
   })
 }
 
+function normalizeServiceDecision(value: unknown): ServiceDecision | undefined {
+  switch (value) {
+    case 'reused':
+    case 'updated':
+    case 'preserved':
+    case 'failed':
+    case 'skipped':
+    case 'removalPending':
+      return value
+    default:
+      return undefined
+  }
+}
+
 function toServiceSyncResult(name: string, value: unknown): ServiceSyncResult {
   const entry = asRecord(value)
   const error = entry.error ?? entry.reason
@@ -123,6 +138,8 @@ function toServiceSyncResult(name: string, value: unknown): ServiceSyncResult {
     succeeded: Boolean(entry.succeeded ?? entry.success ?? entry.ok),
     error: error == null ? undefined : String(error),
     errorKind: entry.errorKind == null ? undefined : String(entry.errorKind),
+    decision: normalizeServiceDecision(entry.decision),
+    nodeLocal: Boolean(entry.nodeLocal),
     warnings: Array.isArray(entry.warnings) ? entry.warnings.map((warning) => String(warning)) : [],
   }
 }
@@ -147,6 +164,10 @@ export function normalizeSyncReport(raw: unknown): SyncReport {
     name: rec.name == null ? undefined : String(rec.name),
     succeeded: rec.succeeded === undefined ? services.every((s) => s.succeeded) : Boolean(rec.succeeded),
     services,
+    dataDirectoryAvailable:
+      typeof rec.dataDirectoryAvailable === 'boolean' ? rec.dataDirectoryAvailable : undefined,
+    completedAt: rec.completedAt == null ? undefined : String(rec.completedAt),
+    notes: Array.isArray(rec.notes) ? rec.notes.map((note) => String(note)) : [],
     error: rec.error == null ? undefined : String(rec.error),
     errorKind: rec.errorKind == null ? undefined : String(rec.errorKind),
   }
@@ -204,6 +225,7 @@ export const api = {
         name: String(rec.name ?? name),
         yaml: String(rec.yaml ?? ''),
         lock: rec.lock ? (asRecord(rec.lock) as ConfigDetail['lock']) : null,
+        lastSync: rec.lastSync ? normalizeSyncReport(rec.lastSync) : null,
       } satisfies ConfigDetail
     }),
 

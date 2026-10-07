@@ -1,12 +1,30 @@
 <script setup lang="ts">
 import { NIcon, NList, NListItem, NTag, NText, useThemeVars } from 'naive-ui'
-import { CheckmarkCircleOutline, CloseCircleOutline } from '@vicons/ionicons5'
+import { CheckmarkCircleOutline, CloseCircleOutline, WarningOutline } from '@vicons/ionicons5'
 import { syncReportEntries } from '../api/client'
-import type { SyncReport } from '../api/types'
+import type { ServiceSyncResult, SyncReport } from '../api/types'
 
 defineProps<{ report: SyncReport | null }>()
 
 const vars = useThemeVars()
+
+function isRemovalPending(result: ServiceSyncResult): boolean {
+  return result.decision === 'removalPending' || result.errorKind === 'removalPending'
+}
+
+function reportHasPendingRemoval(report: SyncReport): boolean {
+  return report.errorKind === 'removalPending' || report.services.some(isRemovalPending)
+}
+
+function reportErrorPrefix(report: SyncReport): string {
+  const errorKind = reportHasPendingRemoval(report) ? 'removal pending' : report.errorKind
+  return errorKind ? `${errorKind}: ` : ''
+}
+
+function serviceErrorPrefix(result: ServiceSyncResult): string {
+  const errorKind = isRemovalPending(result) ? 'removal pending' : result.errorKind
+  return errorKind ? `${errorKind}: ` : ''
+}
 </script>
 
 <template>
@@ -14,9 +32,13 @@ const vars = useThemeVars()
     <n-text
       v-if="report.succeeded === false && report.error"
       class="reason run-error"
-      :style="{ color: vars.errorColor }"
+      :style="{
+        color: reportHasPendingRemoval(report)
+          ? vars.warningColor
+          : vars.errorColor,
+      }"
     >
-      {{ report.errorKind ? `${report.errorKind}: ` : '' }}{{ report.error }}
+      {{ reportErrorPrefix(report) }}{{ report.error }}
     </n-text>
     <n-list v-if="syncReportEntries(report).length" size="small" bordered>
       <n-list-item v-for="result in syncReportEntries(report)" :key="result.name">
@@ -24,16 +46,31 @@ const vars = useThemeVars()
           <div class="row">
             <n-icon
               size="18"
-              :style="{ color: result.succeeded ? vars.successColor : vars.errorColor }"
+              :style="{
+                color: result.succeeded
+                  ? vars.successColor
+                  : isRemovalPending(result)
+                    ? vars.warningColor
+                    : vars.errorColor,
+              }"
             >
               <CheckmarkCircleOutline v-if="result.succeeded" />
+              <WarningOutline v-else-if="isRemovalPending(result)" />
               <CloseCircleOutline v-else />
             </n-icon>
             <span class="name">{{ result.name }}</span>
             <n-tag v-if="result.succeeded" size="tiny" type="success" :bordered="false">synced</n-tag>
+            <n-tag
+              v-else-if="isRemovalPending(result)"
+              size="tiny"
+              type="warning"
+              :bordered="false"
+            >
+              removal pending
+            </n-tag>
             <n-tag v-else size="tiny" type="error" :bordered="false">failed</n-tag>
             <n-text v-if="!result.succeeded" depth="2" class="reason">
-              {{ result.errorKind ? `${result.errorKind}: ` : '' }}{{ result.error ?? 'unknown error' }}
+              {{ serviceErrorPrefix(result) }}{{ result.error ?? 'unknown error' }}
             </n-text>
           </div>
           <div v-if="result.warnings.length" class="warnings">

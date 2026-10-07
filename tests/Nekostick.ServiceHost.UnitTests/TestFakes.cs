@@ -17,14 +17,31 @@ internal sealed class FakeConfigurationApi : IExtensionConfigurationApi
 
     /// <summary>Gets or sets the error code reported when no settings row exists.</summary>
     public ConfigurationErrorCode MissingSettingsErrorCode { get; set; } = ConfigurationErrorCode.NoSettings;
+    public ConfigurationReadResult<ExtensionSettingsConfiguration>? SettingsReadOverride { get; set; }
 
     public int WriteSettingsCallCount { get; private set; }
+    public Action<ExtensionSettingsConfiguration>? SettingsWritten { get; set; }
+    public ExtensionSettingsConfiguration? CurrentSettings => _settings;
+
+    public void UpdateSettings(ExtensionSettingsConfiguration settings)
+    {
+        _settings = settings;
+        _settingsVersion = settings.Version;
+    }
+
+    public void RemoveSettings()
+    {
+        _settings = null;
+        _settingsVersion = 0;
+    }
 
     public List<ExtensionSettingsConfiguration> WrittenSettings { get; } = new();
 
     public ConfigurationWriteResult? NextWriteResult { get; set; }
 
     public ConfigurationWriteResult? WriteFailure { get; set; }
+
+    public Action? BeforeWriteSettings { get; set; }
 
     public HostApiVersion ApiVersion => new(1, 4, 0);
 
@@ -45,10 +62,10 @@ internal sealed class FakeConfigurationApi : IExtensionConfigurationApi
 
     public ValueTask<ConfigurationReadResult<ExtensionSettingsConfiguration>> ReadSettingsAsync(
         CancellationToken cancellationToken) =>
-        ValueTask.FromResult(_settings is null
+        ValueTask.FromResult(SettingsReadOverride ?? (_settings is null
             ? ConfigurationReadResult<ExtensionSettingsConfiguration>.Failure(
                 new ConfigurationError(MissingSettingsErrorCode, "The extension has no persisted settings document."))
-            : ConfigurationReadResult<ExtensionSettingsConfiguration>.Success(_settings));
+            : ConfigurationReadResult<ExtensionSettingsConfiguration>.Success(_settings)));
 
     public ValueTask<ConfigurationWriteResult> WriteSettingsAsync(
         long expectedVersion,
@@ -57,6 +74,7 @@ internal sealed class FakeConfigurationApi : IExtensionConfigurationApi
     {
         WriteSettingsCallCount++;
         WrittenSettings.Add(settings);
+        BeforeWriteSettings?.Invoke();
         if (NextWriteResult is not null)
         {
             var result = NextWriteResult;
@@ -75,6 +93,7 @@ internal sealed class FakeConfigurationApi : IExtensionConfigurationApi
             settings.SchemaVersion,
             settings.SettingsJson,
             _settingsVersion);
+        SettingsWritten?.Invoke(_settings);
         return ValueTask.FromResult(ConfigurationWriteResult.Success(_settingsVersion));
     }
 }
@@ -96,8 +115,13 @@ internal sealed class FakeLogger : IExtensionLogger
 internal sealed class FakeStatusSink : IExtensionStatusSink
 {
     public List<ExtensionStatus> Entries { get; } = new();
+    public Action<ExtensionStatus>? Reported { get; set; }
 
-    public void Report(ExtensionStatus status) => Entries.Add(status);
+    public void Report(ExtensionStatus status)
+    {
+        Entries.Add(status);
+        Reported?.Invoke(status);
+    }
 }
 
 internal sealed class FakeBridge : IExtensionHostBridge14
@@ -126,6 +150,7 @@ internal sealed class FakeBridge : IExtensionHostBridge14
     public IExtensionServiceOutputApi ServiceOutput { get; set; } = new FakeServiceOutputApi();
     public IExtensionServiceRuntimeStateApi ServiceRuntimeState => null!;
     public HostApiVersion ApiVersion { get; set; } = new(1, 4, 0);
+    public ExtensionHostInfoSnapshot HostInfo { get; set; } = ExtensionHostInfoSnapshot.Unavailable;
     public IExtensionSettingsReader Configuration => null!;
     public IExtensionConfigurationApi ConfigurationApi { get; set; } = new FakeConfigurationApi();
     public IExtensionFullConfigurationApi FullConfiguration { get; set; } = new FakeFullConfigurationApi(new(
@@ -136,7 +161,8 @@ internal sealed class FakeBridge : IExtensionHostBridge14
         ImmutableArray<ExtensionRecordConfiguration>.Empty,
         ImmutableArray<ExtensionSettingsConfiguration>.Empty));
     public IExtensionRouteApi Routes { get; set; } = new FakeRouteApi();
-    public IExtensionServiceApi Services => null!;
+    public FakeServiceApi ServiceApi { get; } = new();
+    public IExtensionServiceApi Services => ServiceApi;
     public IExtensionEndpointApi Endpoints => null!;
     public IExtensionLifecycleApi Lifecycle => null!;
     public IExtensionContractRegistry Contracts => null!;
@@ -160,16 +186,52 @@ internal sealed class FakeFullConfigurationApi : IExtensionFullConfigurationApi
     public ConfigurationReadResult<HostConfigurationSnapshot>? NextReadResult { get; set; }
 
     public int ReplaceCallCount { get; private set; }
+    public int ReadCallCount { get; private set; }
 
     public long LastExpectedVersion { get; private set; }
 
     public ConfigurationChangeSet? LastChanges { get; private set; }
 
     public List<ConfigurationChangeSet> ChangesHistory { get; } = [];
+    public Action<FakeFullConfigurationApi>? BeforeReplace { get; set; }
+    public ConfigurationWriteResult? NextReplaceResult { get; set; }
+    public Action<ExtensionSettingsConfiguration>? SettingsCommitted { get; set; }
+    public bool IncrementSettingsVersionOnEveryReplace { get; set; }
+    public void RecordSettingsWrite(ExtensionSettingsConfiguration settings)
+    {
+        var builder = Snapshot.ExtensionSettings.ToBuilder();
+        var index = -1;
+        for (var currentIndex = 0; currentIndex < builder.Count; currentIndex++)
+        {
+            if (string.Equals(builder[currentIndex].ExtensionId, settings.ExtensionId, StringComparison.Ordinal))
+            {
+                index = currentIndex;
+                break;
+            }
+        }
+
+        if (index >= 0)
+        {
+            builder[index] = settings;
+        }
+        else
+        {
+            builder.Add(settings);
+        }
+
+        Snapshot = new HostConfigurationSnapshot(
+            Snapshot.Version + 1,
+            Snapshot.GlobalSettings,
+            Snapshot.Routes,
+            Snapshot.Services,
+            Snapshot.ExtensionRecords,
+            builder.ToImmutable());
+    }
 
     public ValueTask<ConfigurationReadResult<HostConfigurationSnapshot>> ReadAsync(
         CancellationToken cancellationToken)
     {
+        ReadCallCount++;
         return ValueTask.FromResult(
             NextReadResult ?? ConfigurationReadResult<HostConfigurationSnapshot>.Success(Snapshot));
     }
@@ -183,40 +245,133 @@ internal sealed class FakeFullConfigurationApi : IExtensionFullConfigurationApi
         LastExpectedVersion = expectedVersion;
         LastChanges = changes;
         ChangesHistory.Add(changes);
+        var beforeReplace = BeforeReplace;
+        BeforeReplace = null;
+        beforeReplace?.Invoke(this);
+
+        if (expectedVersion != Snapshot.Version)
+        {
+            return ValueTask.FromResult(ConfigurationWriteResult.Failure(
+                new ConfigurationError(
+                    ConfigurationErrorCode.ConcurrencyConflict,
+                    "The full Host configuration version changed.")));
+        }
+
+        foreach (var incoming in changes.ExtensionSettings)
+        {
+            var existing = Snapshot.ExtensionSettings.FirstOrDefault(value =>
+                string.Equals(value.ExtensionId, incoming.ExtensionId, StringComparison.Ordinal));
+            if ((existing is null && incoming.Version != 0) ||
+                (existing is not null && incoming.Version != existing.Version))
+            {
+                return ValueTask.FromResult(ConfigurationWriteResult.Failure(
+                    new ConfigurationError(
+                        ConfigurationErrorCode.ConcurrencyConflict,
+                        "An extension settings version changed.")));
+            }
+        }
+        if (NextReplaceResult is { } nextReplaceResult)
+        {
+            NextReplaceResult = null;
+            return ValueTask.FromResult(nextReplaceResult);
+        }
+
+        var committedSettings = ImmutableArray.CreateBuilder<ExtensionSettingsConfiguration>(changes.ExtensionSettings.Length);
+        foreach (var incoming in changes.ExtensionSettings)
+        {
+            var existing = Snapshot.ExtensionSettings.FirstOrDefault(value =>
+                string.Equals(value.ExtensionId, incoming.ExtensionId, StringComparison.Ordinal));
+            var unchanged = existing is not null &&
+                            existing.SchemaVersion == incoming.SchemaVersion &&
+                            string.Equals(existing.SettingsJson, incoming.SettingsJson, StringComparison.Ordinal);
+            var committed = existing is null
+                ? new ExtensionSettingsConfiguration(
+                    incoming.ExtensionId,
+                    incoming.SchemaVersion,
+                    incoming.SettingsJson,
+                    Math.Max(1, incoming.Version))
+                : unchanged && !IncrementSettingsVersionOnEveryReplace
+                    ? existing
+                    : new ExtensionSettingsConfiguration(
+                        incoming.ExtensionId,
+                        incoming.SchemaVersion,
+                        incoming.SettingsJson,
+                        existing.Version + 1);
+            committedSettings.Add(committed);
+            if (!unchanged || IncrementSettingsVersionOnEveryReplace)
+            {
+                SettingsCommitted?.Invoke(committed);
+            }
+        }
+
         Snapshot = new HostConfigurationSnapshot(
             expectedVersion + 1,
             changes.GlobalSettings,
             changes.Routes,
             changes.Services,
             changes.ExtensionRecords,
-            changes.ExtensionSettings);
+            committedSettings.ToImmutable());
         return ValueTask.FromResult(ConfigurationWriteResult.Success(expectedVersion + 1));
     }
 }
 
-public class CountingSupervisorProxy : DispatchProxy
+internal class RecordingRestartSupervisorProxy : DispatchProxy
 {
-    public int ReadCallCount { get; private set; }
+    public int RestartCallCount { get; private set; }
 
-    public int ResumeCallCount { get; private set; }
+    public Guid? ServiceId { get; private set; }
 
-    internal static IExtensionSupervisorApi Create(out CountingSupervisorProxy fake)
+    public ConfigurationWriteResult Result { get; set; } = ConfigurationWriteResult.Success();
+
+    internal static IExtensionSupervisorApi Create(out RecordingRestartSupervisorProxy fake)
     {
-        var supervisor = DispatchProxy.Create<IExtensionSupervisorApi, CountingSupervisorProxy>();
-        fake = (CountingSupervisorProxy)(object)supervisor;
+        var supervisor = DispatchProxy.Create<IExtensionSupervisorApi, RecordingRestartSupervisorProxy>();
+        fake = (RecordingRestartSupervisorProxy)(object)supervisor;
         return supervisor;
     }
 
     protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
     {
-        switch (targetMethod?.Name)
+        if (targetMethod?.Name == nameof(IExtensionSupervisorApi.RestartAsync))
         {
-            case nameof(IExtensionSupervisorApi.ReadAsync):
-                ReadCallCount++;
-                break;
-            case nameof(IExtensionSupervisorApi.ResumeAsync):
-                ResumeCallCount++;
-                break;
+            RestartCallCount++;
+            ServiceId = (Guid)args![0]!;
+            return ValueTask.FromResult(Result);
+        }
+
+        throw new NotSupportedException($"Unexpected supervisor call: {targetMethod?.Name}.");
+    }
+}
+
+internal class FixedRuntimeSupervisorProxy : DispatchProxy
+{
+    private ImmutableArray<ExtensionServiceRuntimeSnapshot> _snapshots;
+
+    public int ReadCallCount { get; private set; }
+    public int ResumeCallCount { get; private set; }
+    public Guid? ResumedServiceId { get; private set; }
+
+    internal static IExtensionSupervisorApi Create(params ExtensionServiceRuntimeSnapshot[] snapshots)
+    {
+        var supervisor = DispatchProxy.Create<IExtensionSupervisorApi, FixedRuntimeSupervisorProxy>();
+        ((FixedRuntimeSupervisorProxy)(object)supervisor)._snapshots = ImmutableArray.CreateRange(snapshots);
+        return supervisor;
+    }
+
+    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+    {
+        if (targetMethod?.Name == nameof(IExtensionSupervisorApi.ReadAsync))
+        {
+            ReadCallCount++;
+            return ValueTask.FromResult(ConfigurationReadResult<ImmutableArray<ExtensionServiceRuntimeSnapshot>>.Success(
+                _snapshots));
+        }
+
+        if (targetMethod?.Name == nameof(IExtensionSupervisorApi.ResumeAsync))
+        {
+            ResumeCallCount++;
+            ResumedServiceId = (Guid)args![0]!;
+            return ValueTask.FromResult(ConfigurationWriteResult.Success());
         }
 
         throw new NotSupportedException($"Unexpected supervisor call: {targetMethod?.Name}.");
@@ -281,9 +436,31 @@ internal sealed class FakeTaskScheduler : IExtensionTaskScheduler
 
 internal sealed class FakeEventPublisher : IExtensionEventPublisher
 {
+    private Func<ExtensionEvent, CancellationToken, ValueTask>? _callback;
+
     public ExtensionEventSubscribeResult SubscribeResult { get; set; } = ExtensionEventSubscribeResult.Success;
     public ExtensionEventPublishResult TryPublish(ExtensionEvent @event) => ExtensionEventPublishResult.Success;
-    public ExtensionEventSubscribeResult TrySubscribe(Func<ExtensionEvent, CancellationToken, ValueTask> callback) => SubscribeResult;
+
+    public ExtensionEventSubscribeResult TrySubscribe(Func<ExtensionEvent, CancellationToken, ValueTask> callback)
+    {
+        if (SubscribeResult is not ExtensionEventSubscribeFailureResult)
+        {
+            _callback = callback;
+        }
+
+        return SubscribeResult;
+    }
+
+    public ValueTask DispatchAsync(ExtensionEvent @event, CancellationToken cancellationToken = default)
+    {
+        var callback = _callback;
+        if (callback is null)
+        {
+            throw new InvalidOperationException("No event callback has been subscribed.");
+        }
+
+        return callback(@event, cancellationToken);
+    }
 }
 
 internal sealed class FakeRouteApi : IExtensionRouteApi
@@ -303,6 +480,58 @@ internal sealed class FakeRouteApi : IExtensionRouteApi
         Guid routeId,
         CancellationToken cancellationToken = default) =>
         ValueTask.FromResult(ConfigurationWriteResult.Success(expectedVersion + 1));
+}
+
+internal sealed class FakeServiceApi : IExtensionServiceApi
+{
+    public ImmutableArray<ExtensionServiceConfiguration> OwnedServices { get; set; } = ImmutableArray<ExtensionServiceConfiguration>.Empty;
+
+    public ConfigurationReadResult<ImmutableArray<ExtensionServiceConfiguration>>? ReadResultOverride { get; set; }
+
+    public int ReadOwnedCallCount { get; private set; }
+    public int UpsertCallCount { get; private set; }
+    public int RemoveCallCount { get; private set; }
+
+    public ValueTask<ConfigurationReadResult<ImmutableArray<ExtensionServiceConfiguration>>> ReadOwnedAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ReadOwnedCallCount++;
+        return ValueTask.FromResult(ReadResultOverride ??
+            ConfigurationReadResult<ImmutableArray<ExtensionServiceConfiguration>>.Success(OwnedServices));
+    }
+
+    public ValueTask<ConfigurationWriteResult> UpsertAsync(
+        long expectedVersion,
+        ExtensionServiceConfiguration service,
+        CancellationToken cancellationToken = default)
+    {
+        UpsertCallCount++;
+        return ValueTask.FromResult(ConfigurationWriteResult.Success(expectedVersion + 1));
+    }
+
+    public ValueTask<ConfigurationWriteResult> RemoveAsync(
+        long expectedVersion,
+        Guid serviceId,
+        CancellationToken cancellationToken = default)
+    {
+        RemoveCallCount++;
+        return ValueTask.FromResult(ConfigurationWriteResult.Success(expectedVersion + 1));
+    }
+
+    public ValueTask<ExtensionServiceOperationResult> StartAsync(
+        Guid serviceId,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    public ValueTask<ExtensionServiceOperationResult> StopAsync(
+        Guid serviceId,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    public ValueTask<ExtensionServiceOperationResult> RestartAsync(
+        Guid serviceId,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
 }
 
 internal sealed class FakeServiceOutputApi : IExtensionServiceOutputApi

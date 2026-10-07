@@ -137,17 +137,21 @@ public sealed class ComposeFileParserTests
         Assert.Contains(exception.Errors, error => error.Path == "services.api.source");
     }
 
-    [Fact]
-    public void Parse_rejects_http_source_url()
+    [Theory]
+    [InlineData("ftp://example.com/api")]
+    [InlineData("file:///tmp/api")]
+    [InlineData("relative/api")]
+    public void Parse_rejects_unsupported_schemes_and_relative_source_urls(string url)
     {
-        var exception = Assert.Throws<ComposeValidationException>(() => _parser.Parse("""
+        var exception = Assert.Throws<ComposeValidationException>(() => _parser.Parse($"""
             services:
               api:
                 source:
-                  url: http://example.com/api
+                  url: "{url}"
             """));
 
-        Assert.Contains(exception.Errors, error => error.Path == "services.api.source.url");
+        var error = Assert.Single(exception.Errors, candidate => candidate.Path == "services.api.source.url");
+        Assert.Equal("Source URLs must be absolute HTTP or HTTPS URLs.", error.Message);
     }
 
     [Theory]
@@ -280,9 +284,11 @@ public sealed class ComposeFileParserTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Parse_declared_sha256_has_no_warning_in_either_mode(bool strictSources)
+    [InlineData("https://example.com/api", false)]
+    [InlineData("https://example.com/api", true)]
+    [InlineData("http://example.com/api", false)]
+    [InlineData("http://example.com/api", true)]
+    public void Parse_declared_sha256_has_no_warning_in_either_mode(string url, bool strictSources)
     {
         var sha256 = new string('a', 64);
         var document = _parser.Parse($"""
@@ -290,11 +296,12 @@ public sealed class ComposeFileParserTests
             services:
               api:
                 source:
-                  url: https://example.com/api
+                  url: {url}
                   sha256: {sha256}
             """);
 
         Assert.Equal(strictSources, document.StrictSources);
+        Assert.Equal(url, document.Services["api"].Source.Url);
         Assert.Empty(document.Services["api"].Warnings);
     }
 

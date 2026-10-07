@@ -24,15 +24,51 @@ public sealed partial class SourceResolver
     private static string CreateTemporaryPath(string temporaryDirectory) =>
         Path.Combine(temporaryDirectory, $"{Guid.CreateVersion7():N}.tmp");
 
-    private static void AtomicInstall(string temporaryPath, string artifactPath)
+    internal static string GetArtifactGenerationDirectory(string serviceArtifactDirectory, string digest) =>
+        Path.Combine(serviceArtifactDirectory, digest.ToLowerInvariant());
+
+    internal static string GetContentAddressedFilePath(
+        string serviceArtifactDirectory,
+        string serviceName,
+        string digest) =>
+        Path.Combine(GetArtifactGenerationDirectory(serviceArtifactDirectory, digest), serviceName);
+
+    private static async ValueTask InstallContentAddressedFileAsync(
+        string temporaryPath,
+        string artifactPath,
+        string expectedDigest,
+        CancellationToken cancellationToken)
     {
         SetExecutable(temporaryPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
         if (Directory.Exists(artifactPath))
         {
-            Directory.Delete(artifactPath, recursive: true);
+            throw new IOException("The content-addressed artifact path is a directory.");
         }
 
-        File.Move(temporaryPath, artifactPath, true);
+        if (File.Exists(artifactPath))
+        {
+            var existingDigest = await ComputeDigestAsync(artifactPath, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(existingDigest, expectedDigest, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("The content-addressed artifact path contains different contents.");
+            }
+
+            return;
+        }
+
+        try
+        {
+            File.Move(temporaryPath, artifactPath);
+        }
+        catch (IOException) when (File.Exists(artifactPath))
+        {
+            var existingDigest = await ComputeDigestAsync(artifactPath, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(existingDigest, expectedDigest, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("The content-addressed artifact path contains different contents.");
+            }
+        }
     }
 
     private static void SetExecutable(string artifactPath)

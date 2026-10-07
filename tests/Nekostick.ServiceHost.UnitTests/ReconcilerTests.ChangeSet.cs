@@ -51,7 +51,6 @@ public sealed partial class ReconcilerTests
 
         var changes = reconciler.BuildChangeSet(
             snapshot,
-            [managedServiceId],
             [managedRouteId],
             [desiredService],
             [desiredRoute]);
@@ -59,12 +58,26 @@ public sealed partial class ReconcilerTests
         Assert.Same(globalSettings, changes.GlobalSettings);
         Assert.Equal(extensionRecords, changes.ExtensionRecords);
         Assert.Equal(extensionSettings, changes.ExtensionSettings);
-        Assert.Equal([unmanagedServiceId, managedServiceId], changes.Services.Select(service => service.Id));
-        Assert.Equal(
-            [unmanagedRouteId, ownerTagOnlyRouteId, managedRouteId],
-            changes.Routes.Select(route => route.Id));
+        Assert.Equal(2, changes.Services.Length);
+        var preservedService = Assert.Single(changes.Services, service => service.Id == unmanagedServiceId);
+        Assert.Equal(unmanagedService.Enabled, preservedService.Enabled);
+        Assert.Equal(unmanagedService.FileName, preservedService.FileName);
+        Assert.Equal(unmanagedService.WorkingDirectory, preservedService.WorkingDirectory);
+        Assert.Equal(unmanagedService.Version, preservedService.Version);
+        var replacedService = Assert.Single(changes.Services, service => service.Id == managedServiceId);
+        Assert.Equal("/new/managed", replacedService.FileName);
+        Assert.Equal("/new", replacedService.WorkingDirectory);
+        Assert.Equal(oldManagedService.Version, replacedService.Version);
+
+        Assert.Equal(3, changes.Routes.Length);
+        var preservedRoute = Assert.Single(changes.Routes, route => route.Id == unmanagedRouteId);
+        Assert.Equal(unmanagedRoute.Matcher.Pattern, preservedRoute.Matcher.Pattern);
+        Assert.Equal(unmanagedRoute.MetadataJson, preservedRoute.MetadataJson);
+        Assert.Single(changes.Routes, route => route.Id == ownerTagOnlyRouteId);
         Assert.DoesNotContain(changes.Routes, route => route.Id == orphanRouteId);
-        Assert.Equal("/new/managed", changes.Services.Single(service => service.Id == managedServiceId).FileName);
+        var replacedRoute = Assert.Single(changes.Routes, route => route.Id == managedRouteId);
+        Assert.Equal("/new", replacedRoute.Matcher.Pattern);
+        Assert.Equal(desiredRoute.MetadataJson, replacedRoute.MetadataJson);
     }
 
     [Fact]
@@ -96,7 +109,7 @@ public sealed partial class ReconcilerTests
     }
 
     [Fact]
-    public async Task Reconcile_removed_service_cascades_route_removal_before_service_removal()
+    public async Task Reconcile_removed_service_persists_retirement_then_commits_removal()
     {
         var root = CreateTempDirectory();
         try
@@ -125,17 +138,137 @@ public sealed partial class ReconcilerTests
                 "/old",
                 "{\"owner\":\"nekostick.svchost\",\"config\":\"demo\",\"service\":\"api\"}");
             var full = new FakeFullConfigurationApi(CreateSnapshot([service], [route]));
-            var reconciler = CreateReconciler(new FakeConfigurationApi(ToExtensionSettings(settings)), full, root);
+            var reconciler = CreateReconciler(
+                new FakeConfigurationApi(ToExtensionSettings(settings)),
+                full,
+                root);
+
+            var pending = await reconciler.ReconcileAsync("test");
+
+            Assert.False(pending.Succeeded);
+            Assert.Equal(SyncErrorCode.RemovalPending, pending.FailureCode);
+            Assert.Equal(ServiceDecision.RemovalPending, Assert.Single(pending.Services).Decision);
+            Assert.Equal(1, full.ReplaceCallCount);
+            var stageA = full.ChangesHistory[0];
+            Assert.False(Assert.Single(stageA.Services).Enabled);
+            Assert.Empty(stageA.Routes);
+            var stagedSettings = JsonSerializer.Deserialize<SvchostSettings>(
+                stageA.ExtensionSettings.Single(entry => entry.ExtensionId == SvchostSettingsSchema.ExtensionId).SettingsJson)!;
+            Assert.Contains(stagedSettings.Retiring, entry => entry.ServiceId == serviceId);
+
+            var completed = await reconciler.ReconcileAsync("test");
+
+            Assert.True(completed.Succeeded);
+            Assert.Equal(2, full.ReplaceCallCount);
+            Assert.Empty(full.Snapshot.Services);
+            Assert.Empty(full.Snapshot.Routes);
+            var finalSettings = JsonSerializer.Deserialize<SvchostSettings>(
+                full.Snapshot.ExtensionSettings.Single(entry => entry.ExtensionId == SvchostSettingsSchema.ExtensionId).SettingsJson)!;
+            Assert.DoesNotContain(finalSettings.Retiring, entry => entry.ServiceId == serviceId);
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+    [Fact]
+    public async Task Reconcile_clears_retirement_for_absent_Host_service_with_owned_routes_in_StageA()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var serviceId = Guid.CreateVersion7();
+            var routeId = Guid.CreateVersion7();
+            var retirement = new RetiringServiceSettings(
+                serviceId,
+                [routeId],
+                "demo",
+                "api",
+                "document");
+            var settings = new SvchostSettings(
+                null,
+                new SvchostRouteSettings(Guid.CreateVersion7(), Guid.CreateVersion7()),
+                retiring: [retirement]);
+            var ownedRoute = CreateRoute(
+                routeId,
+                serviceId,
+                "/api",
+                "{\"owner\":\"nekostick.svchost\",\"config\":\"demo\",\"service\":\"api\"}");
+            var full = new FakeFullConfigurationApi(CreateSnapshot(routes: [ownedRoute]));
+            var configurationApi = new FakeConfigurationApi(ToExtensionSettings(settings));
+            var reconciler = CreateReconciler(configurationApi, full, root);
 
             var report = await reconciler.ReconcileAsync("test");
 
             Assert.True(report.Succeeded);
-            Assert.Equal(2, full.ReplaceCallCount);
-            var firstChanges = full.ChangesHistory[0];
-            Assert.Contains(firstChanges.Services, item => item.Id == serviceId);
-            Assert.DoesNotContain(firstChanges.Routes, item => item.Id == routeId);
+            Assert.Null(report.FailureCode);
+            Assert.Equal(1, full.ReplaceCallCount);
+            Assert.Empty(full.ChangesHistory.Single().Services);
+            Assert.Empty(full.ChangesHistory.Single().Routes);
             Assert.Empty(full.Snapshot.Services);
             Assert.Empty(full.Snapshot.Routes);
+            var stagedSettings = JsonSerializer.Deserialize<SvchostSettings>(
+                full.ChangesHistory.Single().ExtensionSettings.Single(
+                    entry => entry.ExtensionId == SvchostSettingsSchema.ExtensionId).SettingsJson)!;
+            var persistedSettings = JsonSerializer.Deserialize<SvchostSettings>(
+                full.Snapshot.ExtensionSettings.Single(
+                    entry => entry.ExtensionId == SvchostSettingsSchema.ExtensionId).SettingsJson)!;
+            Assert.DoesNotContain(stagedSettings.Retiring, entry => entry.ServiceId == serviceId);
+            Assert.DoesNotContain(persistedSettings.Retiring, entry => entry.ServiceId == serviceId);
+            Assert.Equal(0, configurationApi.WriteSettingsCallCount);
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+    [Fact]
+    public async Task Reconcile_keeps_retirement_when_stage_b_Host_validation_is_rejected()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var serviceId = Guid.CreateVersion7();
+            var artifactPath = Path.Combine(root, "api");
+            await File.WriteAllTextAsync(artifactPath, "api artifact");
+            var retirement = new RetiringServiceSettings(
+                serviceId,
+                Array.Empty<Guid>(),
+                "demo",
+                "api",
+                "document");
+            var settings = new SvchostSettings(
+                null,
+                new SvchostRouteSettings(Guid.CreateVersion7(), Guid.CreateVersion7()),
+                retiring: [retirement]);
+            var service = CreateService(serviceId, false, artifactPath, root, DateTimeOffset.UtcNow);
+            var full = new FakeFullConfigurationApi(CreateSnapshot([service]));
+            full.NextReplaceResult = ConfigurationWriteResult.Failure(
+                new ConfigurationError(ConfigurationErrorCode.Validation, "Service removal is blocked by a live lease."));
+            var configurationApi = new FakeConfigurationApi(ToExtensionSettings(settings));
+            var reconciler = CreateReconciler(configurationApi, full, root);
+
+            var report = await reconciler.ReconcileAsync("test");
+
+            Assert.False(report.Succeeded);
+            Assert.Equal(ConfigurationErrorCode.Validation, report.ErrorCode);
+            Assert.Equal(SyncErrorCode.RemovalPending, report.FailureCode);
+            Assert.Equal(ServiceDecision.RemovalPending, Assert.Single(report.Services).Decision);
+            Assert.Equal(1, full.ReplaceCallCount);
+            Assert.Empty(full.ChangesHistory[0].Services);
+            var attemptedSettings = JsonSerializer.Deserialize<SvchostSettings>(
+                full.ChangesHistory[0].ExtensionSettings.Single(
+                    entry => entry.ExtensionId == SvchostSettingsSchema.ExtensionId).SettingsJson)!;
+            Assert.DoesNotContain(attemptedSettings.Retiring, entry => entry.ServiceId == serviceId);
+            Assert.Equal(serviceId, Assert.Single(full.Snapshot.Services).Id);
+            Assert.False(Assert.Single(full.Snapshot.Services).Enabled);
+            var persistedSettings = JsonSerializer.Deserialize<SvchostSettings>(
+                full.Snapshot.ExtensionSettings.Single(
+                    entry => entry.ExtensionId == SvchostSettingsSchema.ExtensionId).SettingsJson)!;
+            Assert.Contains(persistedSettings.Retiring, entry => entry.ServiceId == serviceId);
+            Assert.True(File.Exists(artifactPath));
         }
         finally
         {
@@ -364,27 +497,55 @@ public sealed partial class ReconcilerTests
     }
 
     [Fact]
-    public async Task Reconcile_rewrites_cleared_route_owner_once()
+    public async Task Reconcile_host_returned_owner_null_and_canonical_json_skip_repeated_replace()
     {
         var fixture = await CreateRouteReconcileFixtureAsync(
             "current",
             "current",
+            snapshotMetadataJson: CanonicalizeHostJson(
+                """{"owner":"nekostick.svchost","config":"demo","service":"api"}"""),
             snapshotOwnerExtensionId: null);
         try
         {
-            var full = new FakeFullConfigurationApi(fixture.Snapshot);
-            var reconciler = CreateReconciler(
-                new FakeConfigurationApi(ToExtensionSettings(fixture.Settings)),
-                full,
-                fixture.DataDirectory);
+            var serializedSettings = ToExtensionSettings(fixture.Settings);
+            var canonicalSettings = new ExtensionSettingsConfiguration(
+                serializedSettings.ExtensionId,
+                serializedSettings.SchemaVersion,
+                CanonicalizeHostJson(serializedSettings.SettingsJson),
+                41);
+            var snapshot = new HostConfigurationSnapshot(
+                73,
+                fixture.Snapshot.GlobalSettings,
+                fixture.Snapshot.Routes,
+                fixture.Snapshot.Services,
+                fixture.Snapshot.ExtensionRecords,
+                [canonicalSettings]);
+            var full = new FakeFullConfigurationApi(snapshot);
+            var configurationApi = new FakeConfigurationApi(canonicalSettings);
+            var reconciler = CreateReconciler(configurationApi, full, fixture.DataDirectory);
+            var originalRoute = Assert.Single(snapshot.Routes);
+            var originalService = Assert.Single(snapshot.Services);
 
-            var report = await reconciler.ReconcileAsync("test");
+            var firstReport = await reconciler.ReconcileAsync("test");
+            var secondReport = await reconciler.ReconcileAsync("test");
 
-            Assert.True(report.Succeeded);
-            Assert.Equal(1, full.ReplaceCallCount);
-            Assert.Equal(
-                SvchostSettingsSchema.ExtensionId,
-                full.LastChanges!.Routes.Single().OwnerExtensionId);
+            Assert.True(firstReport.Succeeded);
+            Assert.True(secondReport.Succeeded);
+            Assert.Null(firstReport.WrittenConfigurationVersion);
+            Assert.Null(secondReport.WrittenConfigurationVersion);
+            Assert.Equal(0, full.ReplaceCallCount);
+            Assert.Equal(73L, full.Snapshot.Version);
+            Assert.Equal(originalService.Version, Assert.Single(full.Snapshot.Services).Version);
+            var currentRoute = Assert.Single(full.Snapshot.Routes);
+            Assert.Null(currentRoute.OwnerExtensionId);
+            Assert.Equal(originalRoute.Version, currentRoute.Version);
+            var currentSettings = Assert.Single(
+                full.Snapshot.ExtensionSettings,
+                entry => entry.ExtensionId == SvchostSettingsSchema.ExtensionId);
+            Assert.Equal(41L, currentSettings.Version);
+            Assert.Equal(canonicalSettings.SettingsJson, currentSettings.SettingsJson);
+            Assert.Same(canonicalSettings, configurationApi.CurrentSettings);
+            Assert.Equal(0, configurationApi.WriteSettingsCallCount);
         }
         finally
         {
@@ -464,40 +625,4 @@ public sealed partial class ReconcilerTests
         };
     }
 
-    [Fact]
-    public async Task Reconcile_extra_managed_ids_are_removed_from_full_snapshot()
-    {
-        var root = CreateTempDirectory();
-        try
-        {
-            var serviceId = Guid.CreateVersion7();
-            var routeId = Guid.CreateVersion7();
-            var snapshot = CreateSnapshot(
-                services: [CreateService(serviceId, true, "/old", "/old", DateTimeOffset.UtcNow)],
-                routes: [CreateRoute(routeId, serviceId, "/old", "{}")] );
-            var full = new FakeFullConfigurationApi(snapshot);
-            var reconciler = CreateReconciler(
-                new FakeConfigurationApi(ToExtensionSettings(CreateSettings())),
-                full,
-                root);
-
-            var report = await reconciler.ReconcileAsync([serviceId], [routeId], "test");
-
-            Assert.True(report.Succeeded);
-            // Two writes: routes first, then the services once the re-read
-            // snapshot shows no route still targeting them.
-            Assert.Equal(2, full.ReplaceCallCount);
-            var firstChanges = full.ChangesHistory[0];
-            Assert.Contains(firstChanges.Services, item => item.Id == serviceId);
-            Assert.DoesNotContain(firstChanges.Routes, item => item.Id == routeId);
-            Assert.Empty(full.LastChanges!.Services);
-            Assert.Empty(full.LastChanges.Routes);
-            Assert.Empty(full.Snapshot.Services);
-            Assert.Empty(full.Snapshot.Routes);
-        }
-        finally
-        {
-            DeleteTempDirectory(root);
-        }
-    }
 }

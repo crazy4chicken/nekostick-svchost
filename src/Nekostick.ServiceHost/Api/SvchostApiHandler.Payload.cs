@@ -147,8 +147,7 @@ public sealed partial class SvchostApiHandler
 
     private static ExtensionStreamingResponse SyncResponse(SyncReport report, string configName)
     {
-        if (report.ErrorCode == ConfigurationErrorCode.ConcurrencyConflict &&
-            report.FailureCode != SyncErrorCode.LockPersistFailed)
+        if (report.ErrorCode == ConfigurationErrorCode.ConcurrencyConflict)
         {
             return Error(
                 409,
@@ -168,6 +167,7 @@ public sealed partial class SvchostApiHandler
                 {
                     ["name"] = service.ServiceName,
                     ["succeeded"] = service.Succeeded,
+                    ["decision"] = service.Decision,
                     ["error"] = service.Error,
                     ["warnings"] = service.Warnings.IsDefaultOrEmpty ? Array.Empty<string>() : service.Warnings.ToArray(),
                     ["nodeLocal"] = service.NodeLocal
@@ -259,7 +259,7 @@ public sealed partial class SvchostApiHandler
     {
         SyncErrorCode.SourceFailed => "source",
         SyncErrorCode.ReconcileFailed => "reconcile",
-        SyncErrorCode.LockPersistFailed => "lock",
+        SyncErrorCode.RemovalPending => "removalPending",
         _ => null
     };
 

@@ -6,8 +6,9 @@ public sealed partial class SourceResolver
 {
     private async ValueTask<SourceResolutionResult> ResolvePathAsync(
         ComposeSource source,
+        string serviceName,
         LockSource? previousLock,
-        string artifactPath,
+        string serviceArtifactDirectory,
         string temporaryDirectory,
         CancellationToken cancellationToken)
     {
@@ -32,6 +33,7 @@ public sealed partial class SourceResolver
         var sameSource = previousLock?.MatchesPath(sourcePath) == true &&
                          IsValidDigest(previousLock.Sha256) &&
                          string.Equals(previousLock.Sha256, digest, StringComparison.OrdinalIgnoreCase);
+        var artifactPath = GetContentAddressedFilePath(serviceArtifactDirectory, serviceName, digest);
         if (sameSource && File.Exists(artifactPath))
         {
             var artifactDigest = await ComputeDigestAsync(artifactPath, cancellationToken).ConfigureAwait(false);
@@ -51,15 +53,20 @@ public sealed partial class SourceResolver
                 return SourceResolutionResult.Failure("The local source changed while it was copied.");
             }
 
-            AtomicInstall(temporaryPath, artifactPath);
-            var locked = new LockSource
+            await InstallContentAddressedFileAsync(
+                    temporaryPath,
+                    artifactPath,
+                    digest,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var locked = PreserveUnchangedSourceLock(previousLock, new LockSource
             {
                 Kind = "path",
                 Path = sourcePath,
                 Sha256 = digest,
                 Size = info.Length,
                 FetchedAt = DateTimeOffset.UtcNow
-            };
+            });
             return SourceResolutionResult.Success(artifactPath, locked, false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

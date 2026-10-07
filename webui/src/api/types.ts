@@ -49,11 +49,15 @@ export interface ConfigLockSummary {
   services?: Record<string, LockedServiceSummary>
 }
 
+export type ServiceDecision = 'reused' | 'updated' | 'preserved' | 'failed' | 'skipped' | 'removalPending'
+
 export interface ServiceSyncResult {
   name: string
   succeeded: boolean
   error?: string
   errorKind?: string
+  decision?: ServiceDecision
+  nodeLocal: boolean
   warnings: string[]
 }
 
@@ -61,7 +65,9 @@ export interface SyncReport {
   name?: string
   succeeded: boolean
   services: ServiceSyncResult[]
+  dataDirectoryAvailable?: boolean
   completedAt?: string
+  notes?: string[]
   error?: string
   errorKind?: string
 }
@@ -94,6 +100,7 @@ export interface ConfigDetail {
   name: string
   yaml: string
   lock: ConfigLockSummary | null
+  lastSync: SyncReport | null
 }
 
 export interface ServiceFieldDiff {

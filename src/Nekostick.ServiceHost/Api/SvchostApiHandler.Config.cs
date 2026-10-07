@@ -164,11 +164,7 @@ public sealed partial class SvchostApiHandler
                 return ErrorForConfiguration(write.Errors);
             }
 
-            var report = await ReconcileAndRememberAsync(
-                    Array.Empty<Guid>(),
-                    Array.Empty<Guid>(),
-                    "api-config-put",
-                    cancellationToken)
+            var report = await ReconcileAndRememberAsync("api-config-put", cancellationToken)
                 .ConfigureAwait(false);
             return SyncResponse(report, name);
         }
@@ -182,7 +178,6 @@ public sealed partial class SvchostApiHandler
         string name,
         CancellationToken cancellationToken)
     {
-
         await _mutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -192,51 +187,44 @@ public sealed partial class SvchostApiHandler
                 return read.Error;
             }
 
-            var settings = read.Settings!;
-
-            if (!settings.Configs.TryGetValue(name, out var config) || config is null)
+            if (!read.Settings!.Configs.TryGetValue(name, out var config) || config is null)
             {
                 return Error(404, "not_found", "The configuration was not found.");
             }
 
-            var compose = TryParseCompose(config, _composeFileParser);
-            var serviceScope = compose?.ServiceScope ?? ComposeServiceScope.Global;
-            var serviceNames = ServiceNames(config, compose);
-            var remainingGlobalServiceNames = new HashSet<string>(StringComparer.Ordinal);
-            if (serviceScope == ComposeServiceScope.Global)
-            {
-                foreach (var pair in settings.Configs)
-                {
-                    if (string.Equals(pair.Key, name, StringComparison.Ordinal) || pair.Value is null)
-                    {
-                        continue;
-                    }
-
-                    var siblingCompose = TryParseCompose(pair.Value, _composeFileParser);
-                    if (siblingCompose?.ServiceScope != ComposeServiceScope.Document)
-                    {
-                        remainingGlobalServiceNames.UnionWith(ServiceNames(pair.Value, siblingCompose));
-                    }
-                }
-            }
-
-            // Capture all identities before removing the settings entry so Reconciler can
-            // remove the corresponding global assets even though the lock is gone afterward.
-            var serviceIds = (config.Lock?.Services?.Values ?? Enumerable.Empty<LockServiceEntry>())
-                .Where(entry => entry is not null && entry.ServiceId != Guid.Empty)
-                .Select(entry => entry!.ServiceId)
-                .ToArray();
-            var routeIds = (config.Lock?.Services?.Values ?? Enumerable.Empty<LockServiceEntry>())
-                .Where(entry => entry is not null)
-                .SelectMany(entry => entry!.RouteIds ?? new List<Guid>())
-                .Where(id => id != Guid.Empty)
-                .ToArray();
-
             var write = await _settingsStore.UpdateSettingsAsync(
-                    settings =>
+                    latestSettings =>
                     {
-                        settings.Configs.Remove(name);
-                        return settings;
+                        if (latestSettings.Configs.TryGetValue(name, out var latestConfig) &&
+                            latestConfig is not null)
+                        {
+                            var compose = TryParseCompose(latestConfig, _composeFileParser);
+                            var scope = compose?.ServiceScope == ComposeServiceScope.Document
+                                ? "document"
+                                : "global";
+                            foreach (var lockPair in latestConfig.Lock?.Services ??
+                                     new Dictionary<string, LockServiceEntry>(StringComparer.Ordinal))
+                            {
+                                var entry = lockPair.Value;
+                                if (entry is null || !SvchostSettings.IsUuidV7(entry.ServiceId))
+                                {
+                                    continue;
+                                }
+
+                                SvchostSettings.AddRetirement(
+                                    latestSettings.Retiring,
+                                    new RetiringServiceSettings(
+                                        entry.ServiceId,
+                                        (entry.RouteIds ?? new List<Guid>()).Where(SvchostSettings.IsUuidV7),
+                                        name,
+                                        IsValidName(lockPair.Key) ? lockPair.Key : "orphan",
+                                        scope));
+                            }
+
+                            latestSettings.Configs.Remove(name);
+                        }
+
+                        return latestSettings;
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -245,13 +233,8 @@ public sealed partial class SvchostApiHandler
                 return ErrorForConfiguration(write.Errors);
             }
 
-            var report = await ReconcileAndRememberAsync(
-                    serviceIds,
-                    routeIds,
-                    "api-config-delete",
-                    cancellationToken)
+            var report = await ReconcileAndRememberAsync("api-config-delete", cancellationToken)
                 .ConfigureAwait(false);
-            TryDeleteConfigDirectory(name, serviceScope, serviceNames, remainingGlobalServiceNames);
             return JsonResponse(
                 200,
                 new
@@ -288,103 +271,9 @@ public sealed partial class SvchostApiHandler
             return Error(404, "not_found", "The configuration was not found.");
         }
 
-        var report = await ReconcileAndRememberAsync(
-                Array.Empty<Guid>(),
-                Array.Empty<Guid>(),
-                "api-config-sync",
-                cancellationToken)
+        var report = await ReconcileAndRememberAsync("api-config-sync", cancellationToken)
             .ConfigureAwait(false);
         return SyncResponse(report, name);
     }
 
-    private void TryDeleteConfigDirectory(
-        string configName,
-        ComposeServiceScope serviceScope,
-        IReadOnlyCollection<string> serviceNames,
-        IReadOnlySet<string> remainingGlobalServiceNames)
-    {
-        var dataDirectory = _bridge.DataDirectory;
-        if (string.IsNullOrWhiteSpace(dataDirectory))
-        {
-            return;
-        }
-
-        try
-        {
-            var svchostRoot = Path.GetFullPath(Path.Combine(dataDirectory, "svchost"));
-            if (serviceScope == ComposeServiceScope.Document)
-            {
-                if (string.Equals(configName, "global", StringComparison.OrdinalIgnoreCase))
-                {
-                    return;
-                }
-
-                var documentRoot = ServiceRootPath.Resolve(dataDirectory, serviceScope, configName);
-                if (IsPathWithin(svchostRoot, documentRoot) && Directory.Exists(documentRoot))
-                {
-                    TryDeletePath(documentRoot);
-                }
-
-                return;
-            }
-
-            var globalRoot = ServiceRootPath.Resolve(dataDirectory, ComposeServiceScope.Global, configName);
-            var artifactDirectory = Path.GetFullPath(Path.Combine(globalRoot, "artifacts"));
-            if (!IsPathWithin(svchostRoot, globalRoot) ||
-                !IsPathWithin(globalRoot, artifactDirectory) ||
-                !Directory.Exists(artifactDirectory))
-            {
-                return;
-            }
-
-            // Keep artifacts still declared by another global config in the shared namespace.
-            foreach (var serviceName in serviceNames)
-            {
-                if (!IsValidName(serviceName) || remainingGlobalServiceNames.Contains(serviceName))
-                {
-                    continue;
-                }
-
-                var artifactPath = Path.GetFullPath(Path.Combine(artifactDirectory, serviceName));
-                if (IsPathWithin(artifactDirectory, artifactPath))
-                {
-                    TryDeletePath(artifactPath);
-                }
-            }
-        }
-        catch (IOException)
-        {
-            // Cleanup is best-effort after the settings entry has been removed.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Cleanup is best-effort after the settings entry has been removed.
-        }
-    }
-
-    private static bool IsPathWithin(string parentDirectory, string candidate) =>
-        candidate.StartsWith(parentDirectory + Path.DirectorySeparatorChar, StringComparison.Ordinal);
-
-    private static void TryDeletePath(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, recursive: true);
-            }
-            else if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch (IOException)
-        {
-            // Cleanup is best-effort after the settings entry has been removed.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Cleanup is best-effort after the settings entry has been removed.
-        }
-    }
 }

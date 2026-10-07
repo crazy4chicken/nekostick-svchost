@@ -7,5 +7,6 @@ public enum ServiceDecision
     Updated,
     Preserved,
     Failed,
-    Skipped
+    Skipped,
+    RemovalPending
 }

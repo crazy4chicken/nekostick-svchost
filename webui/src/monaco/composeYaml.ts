@@ -424,7 +424,7 @@ const KEY_DEFS: Record<string, Record<string, KeyDef>> = {
     route: { doc: 'Optional HTTP route declaration.', block: true },
   },
   'services.*.source': {
-    url: { doc: 'HTTPS URL to download the executable from.' },
+    url: { doc: 'HTTP or HTTPS URL to download the executable from.' },
     path: { doc: 'Node-local filesystem path of the executable.' },
     release: { doc: "Provider release spec using 'provider:spec', e.g. github:owner/repo." },
     sha256: { doc: 'Expected SHA-256 of the source content (64 hex characters).' },

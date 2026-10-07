@@ -41,9 +41,11 @@ services: # 必填 mapping, key 是服务名.
 
 ```yaml
 source:
-  url: "https://example.com/my-api" # 必须是绝对 HTTPS URL.
+  url: "https://example.com/my-api" # 必须是绝对 HTTP 或 HTTPS URL.
   sha256: "0000000000000000000000000000000000000000000000000000000000000000" # 替换为下载文件的 SHA-256.
 ```
+
+`http://` URL 来源可用, 但 HTTP 不加密传输或凭据; 显式 `sha256` 仅校验下载字节, 不会加密凭据.
 
 ```yaml
 source:
@@ -101,10 +103,10 @@ mirror 接受 HTTP 和 HTTPS; HTTP 不提供传输加密. 显式 `source.sha256`
 
 | `serviceScope` | service root | source artifacts | 临时文件 | 服务 CWD |
 | --- | --- | --- | --- | --- |
-| `global` | `<data>/svchost/global` | `<root>/artifacts/` | `<root>/tmp/` | `<root>` |
-| `document` | `<data>/svchost/<configName>` | `<root>/artifacts/` | `<root>/tmp/` | `<root>` |
+| `global` | `<data>/svchost/global` | `<root>/artifacts/sha256/<serviceName>/<sha256>/` | `<root>/tmp/` | `<root>` |
+| `document` | `<data>/svchost/<configName>` | `<root>/artifacts/sha256/<serviceName>/<sha256>/` | `<root>/tmp/` | `<root>` |
 
-URL/path 的解析产物位于 `<root>/artifacts/<serviceName>`; release ZIP 在 `<root>/tmp/` 下载并解压, bundle 安装到 `<root>/artifacts/<serviceName>/`. 因此 global 配置的 release artifacts 也跨配置共享 global root; document 配置则按 config name 隔离.
+URL/path 产物位于 `<root>/artifacts/sha256/<serviceName>/<sha256>/<serviceName>`; 同一服务的不同摘要使用独立且不原位覆盖的 generation. Release ZIP 在 `<root>/tmp/` 下载并解压到 staging, 然后整份 bundle 原子安装到其摘要目录, Host executable path 指向该 generation. 旧版 `<root>/artifacts/<serviceName>` 仅在不再被配置/lock、Host service 或活跃 runtime 引用后于 Host commit 之后清理. `global` scope 在所有配置间共享 artifact root; `document` scope 按 config name 隔离.
 
 ## args 与 env 模板
 
@@ -136,7 +138,7 @@ URL/path 的解析产物位于 `<root>/artifacts/<serviceName>`; release ZIP 在
 | `strictSources` | 可选布尔值, 默认 `false`; 仅接受 `true` 或 `false` (大小写不敏感; `yes`、`no`、`on`、`1` 不接受). |
 | `serviceScope` | 可选字符串, 默认 `global`; 接受 `global`、`document` (大小写不敏感). 其他值会产生配置校验错误. |
 | `services.<service>` | 必须是 mapping; 服务名匹配 `^[a-z0-9][a-z0-9-]{0,62}$`. |
-| `source` | 必填 mapping; 仅允许 `url`、`path`、`release`、`sha256`; `url/path/release` 必须且只能有一个非空值. `url` 必须是绝对 HTTPS URL; `release` 必须是匹配 `\A[a-z0-9][a-z0-9-]*\z` 的 provider key 加非空 spec. |
+| `source` | 必填 mapping; 仅允许 `url`、`path`、`release`、`sha256`; `url/path/release` 必须且只能有一个非空值. `url` 必须是绝对 HTTP 或 HTTPS URL; `release` 必须是匹配 `\A[a-z0-9][a-z0-9-]*\z` 的 provider key 加非空 spec. |
 | `source.sha256` | 可选字符串, 恰好 64 位十六进制字符; `strictSources: true` 时必填. |
 | `args` | 可选字符串 sequence; 每项必须是 scalar string. |
 | `env` | 可选 mapping; key 不得为空或全为空白, value 必须是 scalar string. well-formed `${NAME@target}` 的 service-name target 在 reconcile 时按 `serviceScope` 查找, GUID target 直接保留. |

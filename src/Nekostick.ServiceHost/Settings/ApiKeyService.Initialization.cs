@@ -1,4 +1,6 @@
+using System.Collections.Immutable;
 using Nekolla.Nekostick.Contracts;
+using Nekostick.ServiceHost.Sync;
 
 namespace Nekostick.ServiceHost.Settings;
 
@@ -32,19 +34,98 @@ public sealed partial class ApiKeyService
 
             var snapshot = read.Value!;
             var settings = snapshot.Settings;
-            if (hostInfo.ReadOnly)
-            {
-                SetReadonly(settings);
-                return new ApiKeyInitializationResult(
-                    true,
-                    true,
-                    false,
-                    settings,
-                    ConfigurationErrorCode.Unsupported);
-            }
 
             if (settings is null)
             {
+                ConfigurationReadResult<HostConfigurationSnapshot> fullConfigurationRead;
+                try
+                {
+                    fullConfigurationRead = await _bridge.FullConfiguration.ReadAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception)
+                {
+                    ReportDegraded("settings-unavailable");
+                    return FailureResult(new[]
+                    {
+                        new ConfigurationError(
+                            ConfigurationErrorCode.StorageUnavailable,
+                            "The Host configuration snapshot could not be read while checking missing settings.")
+                    });
+                }
+
+                if (!fullConfigurationRead.IsSuccess || fullConfigurationRead.Value is null)
+                {
+                    ReportDegraded("settings-unavailable");
+                    return FailureResult(fullConfigurationRead.Errors);
+                }
+
+                ConfigurationReadResult<ImmutableArray<ExtensionServiceConfiguration>> ownedServicesRead;
+                try
+                {
+                    ownedServicesRead = await _bridge.Services.ReadOwnedAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception)
+                {
+                    ReportDegraded("settings-unavailable");
+                    return FailureResult(new[]
+                    {
+                        new ConfigurationError(
+                            ConfigurationErrorCode.StorageUnavailable,
+                            "The owned service snapshot could not be read while checking missing settings.")
+                    });
+                }
+
+                if (!ownedServicesRead.IsSuccess || ownedServicesRead.Value.IsDefault)
+                {
+                    ReportDegraded("settings-unavailable");
+                    return ownedServicesRead.IsSuccess
+                        ? FailureResult(new[]
+                        {
+                            new ConfigurationError(
+                                ConfigurationErrorCode.StorageUnavailable,
+                                "The owned service snapshot was unavailable while checking missing settings.")
+                        })
+                        : FailureResult(ownedServicesRead.Errors);
+                }
+
+                var hostConfiguration = fullConfigurationRead.Value!;
+                var ownedServices = ownedServicesRead.Value!;
+                var hasOwnedRoutes = hostConfiguration.Routes.Any(route =>
+                    string.Equals(route.OwnerExtensionId, SvchostSettingsSchema.ExtensionId, StringComparison.Ordinal) ||
+                    Reconciler.IsOwnedRoute(route.MetadataJson));
+                var hasLegacySettings = hostConfiguration.ExtensionSettings.Any(settings =>
+                    string.Equals(settings.ExtensionId, SvchostSettingsSchema.LegacyExtensionId, StringComparison.Ordinal));
+                if (hasOwnedRoutes || hasLegacySettings || !ownedServices.IsDefaultOrEmpty)
+                {
+                    return new ApiKeyInitializationResult(
+                        true,
+                        false,
+                        false,
+                        null,
+                        ConfigurationErrorCode.NoSettings);
+                }
+
+                if (hostInfo.ReadOnly)
+                {
+                    SetReadonly(settings);
+                    return new ApiKeyInitializationResult(
+                        true,
+                        true,
+                        false,
+                        settings,
+                        ConfigurationErrorCode.Unsupported);
+                }
+
                 var candidate = SvchostSettings.CreateInitial();
                 var write = await _settingsStore.WriteSettingsAsync(
                         snapshot.Version,
@@ -54,8 +135,7 @@ public sealed partial class ApiKeyService
 
                 if (write.IsSuccess)
                 {
-                    // The write may have retried after a conflict and adopted another writer's
-                    // raw JSON. Always activate the settings currently persisted by the store.
+                    // Read the persisted winner rather than assuming this candidate is still current.
                     var adopted = await _settingsStore.ReadSettingsAsync(cancellationToken)
                         .ConfigureAwait(false);
                     if (!adopted.IsSuccess)
@@ -98,14 +178,14 @@ public sealed partial class ApiKeyService
                         null);
                 }
 
-                if (HasError(write.Errors, ConfigurationErrorCode.Unsupported))
+                if (HasError(write.Errors, ConfigurationErrorCode.Unsupported) && _bridge.HostInfo.ReadOnly)
                 {
-                    SetReadonly(candidate);
+                    SetReadonly(settings);
                     return new ApiKeyInitializationResult(
                         true,
                         true,
                         false,
-                        candidate,
+                        settings,
                         ConfigurationErrorCode.Unsupported);
                 }
 
@@ -125,6 +205,17 @@ public sealed partial class ApiKeyService
 
                 ReportDegraded("settings-write-failed");
                 return FailureResult(write.Errors);
+            }
+
+            if (hostInfo.ReadOnly)
+            {
+                SetReadonly(settings);
+                return new ApiKeyInitializationResult(
+                    true,
+                    true,
+                    false,
+                    settings,
+                    ConfigurationErrorCode.Unsupported);
             }
 
             Activate(settings);

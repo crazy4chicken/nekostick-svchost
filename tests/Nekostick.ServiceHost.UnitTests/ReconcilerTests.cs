@@ -17,14 +17,45 @@ public sealed partial class ReconcilerTests
         FakeConfigurationApi configurationApi,
         FakeFullConfigurationApi fullConfiguration,
         string dataDirectory,
-        IExtensionSupervisorApi? supervisor = null) =>
-        new(
+        IExtensionSupervisorApi? supervisor = null)
+    {
+        configurationApi.SettingsWritten = fullConfiguration.RecordSettingsWrite;
+        var currentSettings = configurationApi.CurrentSettings;
+        if (currentSettings is not null)
+        {
+            var snapshot = fullConfiguration.Snapshot;
+            if (!snapshot.ExtensionSettings.Any(entry =>
+                    string.Equals(entry.ExtensionId, currentSettings.ExtensionId, StringComparison.Ordinal)))
+            {
+                fullConfiguration.Snapshot = new HostConfigurationSnapshot(
+                    snapshot.Version,
+                    snapshot.GlobalSettings,
+                    snapshot.Routes,
+                    snapshot.Services,
+                    snapshot.ExtensionRecords,
+                    snapshot.ExtensionSettings.Add(currentSettings));
+            }
+
+            fullConfiguration.SettingsCommitted = committed =>
+            {
+                if (string.Equals(
+                        committed.ExtensionId,
+                        SvchostSettingsSchema.ExtensionId,
+                        StringComparison.Ordinal))
+                {
+                    configurationApi.UpdateSettings(committed);
+                }
+            };
+        }
+
+        return new Reconciler(
             new SettingsStore(configurationApi),
             new ComposeFileParser(),
             new SourceResolver(),
             fullConfiguration,
             dataDirectory,
             supervisor);
+    }
 
     private static SvchostSettings CreatePathSettings(
         string sourcePath,
@@ -71,7 +102,63 @@ public sealed partial class ReconcilerTests
             SvchostSettingsSchema.ExtensionId,
             SvchostSettingsSchema.CurrentVersion,
             JsonSerializer.Serialize(settings),
-            0);
+            1);
+
+    private static string CanonicalizeHostJson(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var result = new StringBuilder();
+        AppendHostJson(document.RootElement, result);
+        return result.ToString();
+    }
+
+    private static void AppendHostJson(JsonElement value, StringBuilder result)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                result.Append('{');
+                var firstProperty = true;
+                foreach (var property in value.EnumerateObject()
+                             .OrderBy(property => property.Name.Length)
+                             .ThenBy(property => property.Name, StringComparer.Ordinal))
+                {
+                    if (!firstProperty)
+                    {
+                        result.Append(", ");
+                    }
+
+                    result.Append(JsonSerializer.Serialize(property.Name)).Append(": ");
+                    AppendHostJson(property.Value, result);
+                    firstProperty = false;
+                }
+
+                result.Append('}');
+                break;
+            case JsonValueKind.Array:
+                result.Append('[');
+                var firstItem = true;
+                foreach (var item in value.EnumerateArray())
+                {
+                    if (!firstItem)
+                    {
+                        result.Append(", ");
+                    }
+
+                    AppendHostJson(item, result);
+                    firstItem = false;
+                }
+
+                result.Append(']');
+                break;
+            case JsonValueKind.String:
+                result.Append(JsonSerializer.Serialize(value.GetString()));
+                break;
+            default:
+                result.Append(value.GetRawText());
+                break;
+        }
+    }
 
     private static HostConfigurationSnapshot CreateSnapshot(
         ImmutableArray<ServiceConfiguration>? services = null,
@@ -134,20 +221,26 @@ public sealed partial class ReconcilerTests
         var sourcePath = Path.Combine(root, "api.bin");
         await File.WriteAllTextAsync(sourcePath, "api-v1");
         var dataDirectory = Path.Combine(root, "data");
-        var artifactPath = Path.Combine(dataDirectory, "svchost", "demo", "artifacts", "api");
-        var workingDirectory = Path.Combine(dataDirectory, "svchost", "demo");
+        var serviceRoot = Path.Combine(dataDirectory, "svchost", "demo");
+        var settings = CreatePathSettings(sourcePath, Guid.CreateVersion7(), args: changedSnapshot ? "--changed" : null);
+        var artifactPath = GetContentAddressedArtifactPath(serviceRoot, "api", sourcePath);
         Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
         File.Copy(sourcePath, artifactPath);
-        var serviceId = Guid.CreateVersion7();
-        var settings = CreatePathSettings(sourcePath, serviceId, args: changedSnapshot ? "--changed" : null);
+        var serviceId = settings.Configs["demo"]!.Lock.Services["api"].ServiceId;
         var snapshotService = CreateService(
             serviceId,
             true,
             artifactPath,
-            workingDirectory,
+            serviceRoot,
             DateTimeOffset.UtcNow,
             ImmutableArray<string>.Empty);
         return new PathFixture(root, dataDirectory, sourcePath, settings, CreateSnapshot([snapshotService]));
+    }
+
+    private static string GetContentAddressedArtifactPath(string serviceRoot, string serviceName, string sourcePath)
+    {
+        var digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(sourcePath))).ToLowerInvariant();
+        return Path.Combine(serviceRoot, "artifacts", "sha256", serviceName, digest, serviceName);
     }
 
     private static string CreateTempDirectory()

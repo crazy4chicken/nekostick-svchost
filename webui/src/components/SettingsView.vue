@@ -69,12 +69,14 @@ onMounted(load)
 <template>
   <div class="settings-view">
     <n-spin v-if="loading" size="large" class="centered" />
-    <n-alert v-else-if="loadError" type="error" :bordered="false" title="Settings could not be loaded">
-      {{ loadError }}
-      <template #action>
+    <template v-else-if="loadError">
+      <n-alert type="error" :bordered="false" title="Settings could not be loaded">
+        {{ loadError }}
+      </n-alert>
+      <div class="actions">
         <n-button size="small" @click="load">Retry</n-button>
-      </template>
-    </n-alert>
+      </div>
+    </template>
     <div v-else class="settings-groups">
       <n-card v-for="group in settingsGroups" :key="group.key" :title="group.title">
         <n-text depth="3" class="group-description">{{ group.description }}</n-text>

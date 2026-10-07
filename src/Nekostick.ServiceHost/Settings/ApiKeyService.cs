@@ -105,6 +105,18 @@ public sealed partial class ApiKeyService
         }
     }
 
+    /// <summary>Clears cached authentication state when the persisted settings document is removed.</summary>
+    internal void ClearForSettingsRemoval()
+    {
+        lock (_stateGate)
+        {
+            _permanentKey = null;
+            _bootstrapKey = null;
+            _settings = null;
+            _bootstrap = false;
+        }
+    }
+
     private void ResetState()
     {
         lock (_stateGate)

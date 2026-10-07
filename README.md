@@ -9,7 +9,7 @@
 ## 功能总览
 
 - **声明式同步**: 每个配置文件描述一组服务 (来源/参数/环境变量/健康检查/路由), 扩展持续把 host 实际状态调和到配置描述的状态
-- **可复现来源**: 支持 HTTPS URL、本地文件或 release provider (如 GitHub release). URL 首次解析后锁定 SHA; 锁定产物缺失或损坏而需要重下时, 内容与锁定 SHA 不符会报错. path 每次同步重新计算 SHA; 未显式声明 `sha256` 时内容变化会作为新来源更新 lock, 显式摘要不符时报错. release 按 provider/spec/tag/version/assetName 及可用的上游 digest 复用; GitHub 提供的 digest 变化时会重新下载并更新 lock. 显式 `source.sha256` 才能固定用户要求的内容; 缺少摘要时默认接受可变来源并给出 warning.
+- **可复现来源**: 支持 HTTP/HTTPS URL、本地文件或 release provider (如 GitHub release). HTTP 不加密传输或凭据; 显式 `sha256` 仅校验下载内容, 不加密凭据. URL 首次解析后锁定 SHA; 锁定产物缺失或损坏而需要重下时, 内容与锁定 SHA 不符会报错. path 每次同步重新计算 SHA; 未显式声明 `sha256` 时内容变化会作为新来源更新 lock, 显式摘要不符时报错. release 按 provider/spec/tag/version/assetName 及可用的上游 digest 复用; GitHub 提供的 digest 变化时会重新下载并更新 lock. 显式 `source.sha256` 才能固定用户要求的内容; 缺少摘要时默认接受可变来源并给出 warning.
 - **多配置文件**: 任意多份命名配置; `serviceScope: global` (默认) 共用 `<data>/svchost/global`, `document` 按配置名隔离; 详见 [Compose 配置参考](docs/compose.md).
 - **实时启停**: 监听设置变更事件, 不重启 host 即可应用更新; 服务更新走 host 内建的蓝绿切换
 - **WebUI + API**: `/svchost` 提供管理界面, `/svchost/api` 提供 REST API, API key 认证
@@ -18,7 +18,7 @@
 
 ### 安装
 
-This extension requires a matched host implementing `Nekolla.Nekostick.Contracts` **1.4.0-preview.7** signatures and `IExtensionHostBridge14`, with negotiated Host API **>=1.4.0 <2.0.0**. The upstream contract baseline is [`aae38f85162691a4b25fca8d1294190365e44b21`](https://github.com/Nekolla-Team/nekostick/tree/aae38f85162691a4b25fca8d1294190365e44b21). Upgrade the host and extension together; preview.6 hosts are not supported. `HostApiVersion.Current` and `ExtensionAbi.Version` remain `1.4.0`, so the semantic ABI check alone cannot distinguish preview.6 from preview.7 signature support.
+This extension requires a matched host built against the stable `Nekolla.Nekostick.Contracts` **1.4.0** API and implementing `IExtensionHostBridge14`, with negotiated Host API **>=1.4.0 <2.0.0**. The upstream contract baseline is [`da9c55a434812f5a326b3eb5e263851ff30cb7b4`](https://github.com/Nekolla-Team/nekostick/tree/da9c55a434812f5a326b3eb5e263851ff30cb7b4). Upgrade the host and extension together. `HostApiVersion.Current` and `ExtensionAbi.Version` are `1.4.0`; that semantic version alone does not establish that the stable Contracts signatures are present.
 
 1. 从 [Actions](https://github.com/Nekolla-Team/nekostick-svchost/actions/workflows/build.yml) 下载最新的 `nekostick-svchost.<sha>.zip` 构建产物
 2. 解压到 host 的 `extensions/nekostick.svchost/` 目录 (内含 `manifest.json` + dll)
@@ -30,7 +30,7 @@ This extension requires a matched host implementing `Nekolla.Nekostick.Contracts
 
 ### 首次启动 (bootstrap)
 
-扩展启动时如果没有配置永久 API key, 会在 host 日志里打印当前 bootstrap key (每次启动重新生成, 只保存在内存中). 该 key 可重复用于所有需要 `X-Api-Key` 的端点, 直到成功设置永久 key. 打开 `http://<host>/svchost`, 页面会引导你用该 key 设置永久 key.
+已有 settings 但没有永久 API key 时，writable Host 会按常规进入 bootstrap（read-only Host 不会生成 key）。若 settings 文档缺失，只有在可读 full Host snapshot 与 caller-owned services snapshot 都确认不存在 svchost-owned routes、caller-owned services 或 pre-rename `nekolla.nekostick.svchost` settings row 时，writable Host 才会写入初始 settings 并生成仅保存在内存中的 bootstrap key。若已有受管配置，扩展会保持 `settings-missing`，不生成 key、不清理 routes 或禁用 services；请恢复原 settings。任一 snapshot 不可读时 fail closed 并报告 `settings-unavailable`。
 
 ### 配置文件示例
 

@@ -15,12 +15,14 @@ public sealed record SyncReport(
     /// <summary>Gets whether all service reports succeeded.</summary>
     public bool HasFailures => !Succeeded || Services.Any(service => !service.Succeeded);
 
-    /// <summary>Gets the settings version consumed at the start of reconciliation, when available.</summary>
-    public long? ConsumedSettingsVersion { get; init; }
+    /// <summary>Gets the settings version written by this reconciliation when an atomic Host replacement changed its settings row.</summary>
+    public long? CommittedSettingsVersion { get; init; }
 
-    /// <summary>Gets the host configuration version committed by this run's final ReplaceAsync, or null when the run performed no configuration write.</summary>
+    /// <summary>Gets the settings version consumed by this reconciliation.</summary>
+    internal long? ConsumedSettingsVersion { get; init; }
+
+    /// <summary>Gets the Host configuration version committed by this run's final ReplaceAsync, or null when no configuration write occurred.</summary>
     public long? WrittenConfigurationVersion { get; init; }
-
     /// <summary>Gets a domain-specific reconciliation error, when applicable.</summary>
     public SyncErrorCode? FailureCode { get; init; }
 

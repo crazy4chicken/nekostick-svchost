@@ -38,11 +38,14 @@ public sealed partial class SvchostEntry
             var read = await settingsStore.ReadSettingsAsync(cancellationToken).ConfigureAwait(false);
             if (read.IsSuccess && read.Value is not null)
             {
-                if (read.Value.Settings is not null)
+                if (read.Value.Settings is { } settings)
                 {
-                    apiKeyService?.ReloadFromSettings(read.Value.Settings);
+                    apiKeyService?.ReloadFromSettings(settings);
                 }
-
+                else
+                {
+                    apiKeyService?.ClearForSettingsRemoval();
+                }
                 if (IsSelfSettledSettingsVersion(read.Value.Version))
                 {
                     return;
@@ -166,11 +169,7 @@ public sealed partial class SvchostEntry
                 return;
             }
 
-            var report = await ReconcileTrackedAsync(
-                    Array.Empty<Guid>(),
-                    Array.Empty<Guid>(),
-                    trigger,
-                    debounceCancellation.Token)
+            var report = await ReconcileTrackedAsync(trigger, debounceCancellation.Token)
                 .ConfigureAwait(false);
             RecordSyncReport(report);
             if (force)

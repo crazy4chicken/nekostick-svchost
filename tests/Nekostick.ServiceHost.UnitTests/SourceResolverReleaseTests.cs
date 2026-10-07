@@ -394,6 +394,52 @@ public sealed class SourceResolverReleaseTests
     }
 
     [Fact]
+    public async Task Resolve_release_refetching_same_content_preserves_FetchedAt()
+    {
+        var root = CreateTempDirectory();
+        var assetDownloadCount = 0;
+        var zip = CreateZip(("api", "release-binary"));
+        try
+        {
+            using var client = new HttpClient(new StubHandler((request, _) =>
+            {
+                var url = request.RequestUri!.AbsoluteUri;
+                if (url == ApiUrl)
+                {
+                    return Task.FromResult(JsonResponse(CreateReleaseJson()));
+                }
+
+                assetDownloadCount++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(zip)
+                });
+            }));
+            var resolver = new SourceResolver(client, retryCount: 0);
+            var dataDirectory = Path.Combine(root, "data");
+            var first = await resolver.ResolveAsync(dataDirectory, "demo", "api", CreateSource(), null);
+
+            Assert.True(first.Succeeded, first.Error);
+            var firstSource = first.Source!;
+            var previousFetchedAt = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            firstSource.FetchedAt = previousFetchedAt;
+            Directory.Delete(Path.GetDirectoryName(first.ArtifactPath!)!, recursive: true);
+            var second = await resolver.ResolveAsync(dataDirectory, "demo", "api", CreateSource(), firstSource);
+
+            Assert.True(second.Succeeded, second.Error);
+            var secondSource = second.Source!;
+            Assert.False(second.Reused);
+            Assert.Equal(2, assetDownloadCount);
+            Assert.Equal(firstSource.Sha256, secondSource.Sha256);
+            Assert.Equal(previousFetchedAt, secondSource.FetchedAt);
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+    [Fact]
     public async Task Resolve_release_redownloads_when_the_resolved_identity_changes()
     {
         var root = CreateTempDirectory();
@@ -426,13 +472,18 @@ public sealed class SourceResolverReleaseTests
             var resolver = new SourceResolver(client, retryCount: 0);
             var dataDirectory = Path.Combine(root, "data");
             var first = await resolver.ResolveAsync(dataDirectory, "demo", "api", CreateSource(), null);
-            var second = await resolver.ResolveAsync(dataDirectory, "demo", "api", CreateSource(), first.Source);
-
             Assert.True(first.Succeeded, first.Error);
+            var firstSource = first.Source!;
+            var previousFetchedAt = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            firstSource.FetchedAt = previousFetchedAt;
+            var second = await resolver.ResolveAsync(dataDirectory, "demo", "api", CreateSource(), firstSource);
+
             Assert.True(second.Succeeded, second.Error);
             Assert.False(second.Reused);
+            Assert.NotEqual(firstSource.Sha256, second.Source!.Sha256);
             Assert.Equal(2, zipRequests.Count);
             Assert.Equal("1.2.3", second.Source!.Tag);
+            Assert.NotEqual(previousFetchedAt, second.Source!.FetchedAt);
             Assert.Equal("second-version", await File.ReadAllTextAsync(second.ArtifactPath!));
         }
         finally

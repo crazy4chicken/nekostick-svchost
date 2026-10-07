@@ -15,7 +15,7 @@ public sealed partial class SourceResolver
         LockSource? previousLock,
         IReadOnlyDictionary<string, ReleaseProviderSettings>? releaseProviderSettings,
         ReleaseProviderRegistry releaseProviders,
-        string artifactPath,
+        string serviceArtifactDirectory,
         string temporaryDirectory,
         CancellationToken cancellationToken)
     {
@@ -67,7 +67,6 @@ public sealed partial class SourceResolver
                 providerResult.Warnings);
         }
 
-        var executablePath = FindEntryExecutable(artifactPath, serviceName);
         var sameIdentity = previousLock is not null &&
                            previousLock.MatchesRelease(releaseSource.ProviderKey, releaseSource.Spec) &&
                            string.Equals(previousLock.Tag, asset.Tag, StringComparison.Ordinal) &&
@@ -75,7 +74,13 @@ public sealed partial class SourceResolver
                            string.Equals(previousLock.AssetName, asset.AssetName, StringComparison.Ordinal) &&
                            (source.Sha256 is null || string.Equals(previousLock.Sha256, source.Sha256, StringComparison.OrdinalIgnoreCase)) &&
                            (asset.Sha256 is null || string.Equals(previousLock.Sha256, asset.Sha256, StringComparison.OrdinalIgnoreCase));
-        if (sameIdentity && executablePath is not null)
+        var existingGenerationDirectory = sameIdentity && IsValidDigest(previousLock?.Sha256)
+            ? GetArtifactGenerationDirectory(serviceArtifactDirectory, previousLock!.Sha256!)
+            : string.Empty;
+        var executablePath = existingGenerationDirectory.Length == 0
+            ? null
+            : FindEntryExecutable(existingGenerationDirectory, serviceName);
+        if (executablePath is not null)
         {
             return SourceResolutionResult.Success(executablePath, previousLock!, true, providerResult.Warnings);
         }
@@ -127,10 +132,19 @@ public sealed partial class SourceResolver
             }
 
             SetExecutable(stagedExecutable);
-            ReplaceArtifactDirectory(stagingDirectory, artifactPath);
-            var installedExecutable = FindEntryExecutable(artifactPath, serviceName) ??
-                                      Path.Combine(artifactPath, Path.GetFileName(stagedExecutable));
-            var locked = new LockSource
+            var generationDirectory = GetArtifactGenerationDirectory(serviceArtifactDirectory, download.Sha256);
+            var installedExecutable = InstallContentAddressedDirectory(
+                stagingDirectory,
+                generationDirectory,
+                serviceName);
+            if (installedExecutable is null)
+            {
+                return SourceResolutionResult.Failure(
+                    $"The content-addressed release generation does not contain an executable named '{serviceName}'.",
+                    providerResult.Warnings);
+            }
+
+            var locked = PreserveUnchangedSourceLock(previousLock, new LockSource
             {
                 Kind = "release",
                 ProviderKey = releaseSource.ProviderKey,
@@ -141,7 +155,7 @@ public sealed partial class SourceResolver
                 Sha256 = download.Sha256,
                 Size = download.Size,
                 FetchedAt = DateTimeOffset.UtcNow
-            };
+            });
             return SourceResolutionResult.Success(installedExecutable, locked, false, providerResult.Warnings);
         }
         catch (InvalidDataException exception)
@@ -412,19 +426,32 @@ public sealed partial class SourceResolver
         return windowsExecutableMatch;
     }
 
-    private static void ReplaceArtifactDirectory(string stagingDirectory, string artifactDirectory)
+    private static string? InstallContentAddressedDirectory(
+        string stagingDirectory,
+        string generationDirectory,
+        string serviceName)
     {
-        if (Directory.Exists(artifactDirectory))
+        if (File.Exists(generationDirectory))
         {
-            Directory.Delete(artifactDirectory, recursive: true);
+            throw new IOException("The content-addressed release generation path is a file.");
         }
 
-        if (File.Exists(artifactDirectory))
+        if (Directory.Exists(generationDirectory))
         {
-            File.Delete(artifactDirectory);
+            return FindEntryExecutable(generationDirectory, serviceName);
         }
 
-        Directory.Move(stagingDirectory, artifactDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(generationDirectory)!);
+        try
+        {
+            Directory.Move(stagingDirectory, generationDirectory);
+        }
+        catch (IOException) when (Directory.Exists(generationDirectory))
+        {
+            return FindEntryExecutable(generationDirectory, serviceName);
+        }
+
+        return FindEntryExecutable(generationDirectory, serviceName);
     }
 
     private static bool TryGetReleaseArchitecture(out string arch, out string unsupportedArchitecture)

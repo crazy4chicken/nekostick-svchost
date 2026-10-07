@@ -171,56 +171,55 @@ public sealed partial class SvchostApiHandler
 
             if (action.Equals("restart", StringComparison.Ordinal))
             {
-                var stopWrite = await SetStoppedAsync(configName, serviceName, true, cancellationToken)
+                if (config.Lock?.Services is not { } lockedServices ||
+                    !lockedServices.TryGetValue(serviceName, out var lockEntry) ||
+                    lockEntry is null ||
+                    !SvchostSettings.IsUuidV7(lockEntry.ServiceId))
+                {
+                    return Error(404, "not_found", "The service was not found.");
+                }
+
+                var restart = await _bridge.Supervisor.RestartAsync(
+                        lockEntry.ServiceId,
+                        cancellationToken)
                     .ConfigureAwait(false);
-                if (!stopWrite.IsSuccess)
+                if (!restart.IsSuccess)
                 {
                     return ActionFailureResponse(
                         "restart",
                         configName,
                         serviceName,
-                        ConfigurationFailureMessage(stopWrite));
+                        ConfigurationFailureMessage(restart));
                 }
 
-                var stopReport = await ReconcileAndRememberAsync(
-                        Array.Empty<Guid>(),
-                        Array.Empty<Guid>(),
-                        "api-service-restart",
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                if (!stopReport.Succeeded)
-                {
-                    return ActionResponse(
-                        stopReport,
-                        "restart",
+                var restartReport = new SyncReport(
+                    true,
+                    !string.IsNullOrWhiteSpace(_bridge.DataDirectory),
+                    DateTimeOffset.UtcNow,
+                    ImmutableArray.Create(new ServiceSyncReport(
                         configName,
                         serviceName,
-                        "Restart requested; supervisor lifecycle changes are asynchronous and the disable phase failed.");
-                }
-
-                var startWrite = await SetStoppedAsync(configName, serviceName, false, cancellationToken)
-                    .ConfigureAwait(false);
-                if (!startWrite.IsSuccess)
+                        true,
+                        false,
+                        lockEntry.ServiceId,
+                        (lockEntry.RouteIds ?? new List<Guid>()).ToImmutableArray(),
+                        null)
+                    {
+                        Decision = ServiceDecision.Reused
+                    }),
+                    null,
+                    null)
                 {
-                    return ActionFailureResponse(
-                        "restart",
-                        configName,
-                        serviceName,
-                        ConfigurationFailureMessage(startWrite));
-                }
-
-                var startReport = await ReconcileAndRememberAsync(
-                        Array.Empty<Guid>(),
-                        Array.Empty<Guid>(),
-                        "api-service-restart",
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                    ConsumedSettingsVersion = settingsRead.Value!.Version,
+                    Trigger = "api-service-restart"
+                };
+                RememberReport(restartReport);
                 return ActionResponse(
-                    startReport,
+                    restartReport,
                     "restart",
                     configName,
                     serviceName,
-                    "Restart requested as asynchronous supervisor disable-then-enable reconciliation; process state is not synchronous.");
+                    "Restart requested on this node; process state is asynchronous.");
             }
 
             var shouldStop = action.Equals("stop", StringComparison.Ordinal);
@@ -236,8 +235,6 @@ public sealed partial class SvchostApiHandler
             }
 
             var report = await ReconcileAndRememberAsync(
-                    Array.Empty<Guid>(),
-                    Array.Empty<Guid>(),
                     shouldStop ? "api-service-stop" : "api-service-start",
                     cancellationToken)
                 .ConfigureAwait(false);

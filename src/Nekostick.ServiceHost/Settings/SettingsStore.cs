@@ -93,7 +93,7 @@ public sealed class SettingsStore
         }
     }
 
-    /// <summary>Serializes and writes a settings model with bounded conflict retries.</summary>
+    /// <summary>Serializes and writes a validated settings model.</summary>
     public async ValueTask<ConfigurationWriteResult> WriteSettingsAsync(
         long expectedVersion,
         SvchostSettings settings,
@@ -112,7 +112,7 @@ public sealed class SettingsStore
         string rawJson;
         try
         {
-            rawJson = JsonSerializer.Serialize(settings, SerializerOptions);
+            rawJson = SerializeSettings(settings);
         }
         catch (JsonException exception)
         {
@@ -123,12 +123,40 @@ public sealed class SettingsStore
         return await WriteRawSettingsAsync(expectedVersion, rawJson, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Serializes settings with this store's persisted JSON options.</summary>
+    public string SerializeSettings(SvchostSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return JsonSerializer.Serialize(settings, SerializerOptions);
+    }
+
+    /// <summary>Creates a full-replacement settings row at its observed entity version.</summary>
+    public ExtensionSettingsConfiguration CreateExtensionSettingsConfiguration(
+        SvchostSettings settings,
+        long version)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentOutOfRangeException.ThrowIfNegative(version);
+        var validationErrors = settings.Validate();
+        if (validationErrors.Count > 0)
+        {
+            throw new ArgumentException(string.Join(" ", validationErrors), nameof(settings));
+        }
+
+        return new ExtensionSettingsConfiguration(
+            _extensionId,
+            SvchostSettingsSchema.CurrentVersion,
+            SerializeSettings(settings),
+            version);
+    }
+
+
     /// <summary>Writes validated raw JSON without normalizing its formatting or property order.</summary>
     public async ValueTask<ConfigurationWriteResult> WriteRawSettingsAsync(
         long expectedVersion,
         string rawJson,
         CancellationToken cancellationToken = default)
-{
+    {
         ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
         if (!TryValidateRawJson(rawJson, out var error))
         {
@@ -136,35 +164,10 @@ public sealed class SettingsStore
                 new ConfigurationError(ConfigurationErrorCode.Validation, error!));
         }
 
-        var version = expectedVersion;
-        ConfigurationWriteResult? lastResult = null;
-        for (var attempt = 0; attempt < MaxConflictAttempts; attempt++)
-        {
-            lastResult = await WriteRawOnceAsync(version, rawJson, cancellationToken).ConfigureAwait(false);
-            if (lastResult.IsSuccess || !IsConflict(lastResult))
-            {
-                return lastResult;
-            }
-
-            var reread = await ReadSettingsAsync(cancellationToken).ConfigureAwait(false);
-            if (!reread.IsSuccess)
-            {
-                return ConfigurationWriteResult.Failure(reread.Errors.ToArray());
-            }
-
-            version = reread.Value!.Version;
-            // A conflict means another writer won; preserve that writer's exact JSON on retry.
-            if (reread.Value.RawJson is not null)
-            {
-                rawJson = reread.Value.RawJson;
-            }
-        }
-
-        return lastResult ?? ConfigurationWriteResult.Failure(
-            new ConfigurationError(ConfigurationErrorCode.ConcurrencyConflict, "The settings write exhausted its conflict attempts."));
+        return await WriteRawOnceAsync(expectedVersion, rawJson, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Reads, transforms, and writes settings with bounded conflict retries.</summary>
+    /// <summary>Reads and transforms settings, writing only changed documents with bounded conflict retries.</summary>
     public async ValueTask<ConfigurationWriteResult> UpdateSettingsAsync(
         Func<SvchostSettings, SvchostSettings> update,
         CancellationToken cancellationToken = default)
@@ -180,7 +183,8 @@ public sealed class SettingsStore
                 return ConfigurationWriteResult.Failure(read.Errors.ToArray());
             }
 
-            var current = read.Value!.Settings ?? SvchostSettings.CreateInitial();
+            var snapshot = read.Value!;
+            var current = snapshot.Settings ?? SvchostSettings.CreateInitial();
             SvchostSettings updated;
             try
             {
@@ -215,7 +219,27 @@ public sealed class SettingsStore
                     new ConfigurationError(ConfigurationErrorCode.Validation, ExtensionErrorDetail.FromException(exception).Message));
             }
 
-            lastResult = await WriteRawOnceAsync(read.Value.Version, rawJson, cancellationToken)
+            if (snapshot.RawJson is { } existingJson && JsonDocumentsEqual(existingJson, rawJson))
+            {
+                // Confirm the row version before treating the update as a no-op.
+                var confirmation = await ReadSettingsAsync(cancellationToken).ConfigureAwait(false);
+                if (!confirmation.IsSuccess)
+                {
+                    return ConfigurationWriteResult.Failure(confirmation.Errors.ToArray());
+                }
+
+                var confirmed = confirmation.Value!;
+                if (confirmed.Version != snapshot.Version ||
+                    confirmed.RawJson is null ||
+                    !JsonDocumentsEqual(existingJson, confirmed.RawJson))
+                {
+                    continue;
+                }
+
+                return ConfigurationWriteResult.Success(confirmed.Version);
+            }
+
+            lastResult = await WriteRawOnceAsync(snapshot.Version, rawJson, cancellationToken)
                 .ConfigureAwait(false);
             if (lastResult.IsSuccess || !IsConflict(lastResult))
             {
@@ -225,6 +249,18 @@ public sealed class SettingsStore
 
         return lastResult ?? ConfigurationWriteResult.Failure(
             new ConfigurationError(ConfigurationErrorCode.ConcurrencyConflict, "The settings update exhausted its conflict attempts."));
+    }
+
+    private static bool JsonDocumentsEqual(string left, string right)
+    {
+        if (string.Equals(left, right, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        using var leftDocument = JsonDocument.Parse(left);
+        using var rightDocument = JsonDocument.Parse(right);
+        return JsonElement.DeepEquals(leftDocument.RootElement, rightDocument.RootElement);
     }
 
     private async ValueTask<ConfigurationWriteResult> WriteRawOnceAsync(

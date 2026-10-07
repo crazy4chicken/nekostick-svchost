@@ -67,6 +67,24 @@ public sealed class SettingsModelTests
     }
 
     [Fact]
+    public async Task SettingsStore_raw_write_returns_conflict_without_replaying_the_document()
+    {
+        var configurationApi = new FakeConfigurationApi
+        {
+            NextWriteResult = ConfigurationWriteResult.Failure(
+                new ConfigurationError(ConfigurationErrorCode.ConcurrencyConflict, "The settings changed."))
+        };
+        var store = new SettingsStore(configurationApi);
+
+        var result = await store.WriteRawSettingsAsync(0, store.SerializeSettings(CreateSettings()));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ConfigurationErrorCode.ConcurrencyConflict, Assert.Single(result.Errors).Code);
+        Assert.Equal(1, configurationApi.WriteSettingsCallCount);
+        Assert.Null(configurationApi.CurrentSettings);
+    }
+
+    [Fact]
     public async Task SettingsStore_preserves_update_failure_reason_without_writing()
     {
         var configurationApi = new FakeConfigurationApi();

@@ -167,7 +167,8 @@ public sealed class ServiceStatusApiTests
         var configurationApi = new FakeConfigurationApi();
         var settingsStore = new SettingsStore(configurationApi);
         var supervisorApi = EmptySupervisorProxy.Create(out var supervisor);
-        var bridge = new FakeBridge { SupervisorApi = supervisorApi };
+        var initializationFullConfiguration = new FakeFullConfigurationApi(CreateHostConfigurationSnapshot());
+        var bridge = new FakeBridge { SupervisorApi = supervisorApi, FullConfiguration = initializationFullConfiguration };
         var apiKeyService = new ApiKeyService(settingsStore, bridge);
         var initialization = await apiKeyService.InitializeAsync();
         Assert.True(initialization.Succeeded);

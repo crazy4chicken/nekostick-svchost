@@ -76,6 +76,50 @@ public sealed class SvchostConfigSettings
     [JsonPropertyName("stopped")]
     public string[] Stopped { get; set; } = Array.Empty<string>();
 }
+/// <summary>Tracks a service that must remain managed until its Host removal commits.</summary>
+public sealed class RetiringServiceSettings
+{
+    /// <summary>Creates an empty retirement entry for JSON deserialization.</summary>
+    public RetiringServiceSettings()
+    {
+    }
+
+    /// <summary>Creates a service retirement entry.</summary>
+    public RetiringServiceSettings(
+        Guid serviceId,
+        IEnumerable<Guid> routeIds,
+        string configName,
+        string serviceName,
+        string scope)
+    {
+        ServiceId = serviceId;
+        RouteIds = routeIds.Distinct().ToList();
+        ConfigName = configName;
+        ServiceName = serviceName;
+        Scope = scope;
+    }
+
+    /// <summary>Gets or sets the Host service ID awaiting removal.</summary>
+    [JsonPropertyName("serviceId")]
+    public Guid ServiceId { get; set; }
+
+    /// <summary>Gets or sets the associated Host route IDs.</summary>
+    [JsonPropertyName("routeIds")]
+    public List<Guid> RouteIds { get; set; } = new();
+
+    /// <summary>Gets or sets the originating config name.</summary>
+    [JsonPropertyName("configName")]
+    public string ConfigName { get; set; } = string.Empty;
+
+    /// <summary>Gets or sets the originating service name.</summary>
+    [JsonPropertyName("serviceName")]
+    public string ServiceName { get; set; } = string.Empty;
+
+    /// <summary>Gets or sets the originating service scope.</summary>
+    [JsonPropertyName("scope")]
+    public string Scope { get; set; } = "global";
+}
+
 
 /// <summary>Contains asset-download mirror prefixes for one release provider.</summary>
 public sealed class ReleaseProviderSettings
@@ -108,7 +152,8 @@ public sealed class SvchostSettings
         string? apiKey,
         SvchostRouteSettings routes,
         IDictionary<string, SvchostConfigSettings>? configs = null,
-        IDictionary<string, ReleaseProviderSettings>? releaseProviders = null)
+        IDictionary<string, ReleaseProviderSettings>? releaseProviders = null,
+        IEnumerable<RetiringServiceSettings>? retiring = null)
     {
         ApiKey = apiKey;
         Routes = routes ?? throw new ArgumentNullException(nameof(routes));
@@ -118,6 +163,7 @@ public sealed class SvchostSettings
         ReleaseProviders = releaseProviders is null
             ? new Dictionary<string, ReleaseProviderSettings>(StringComparer.Ordinal)
             : new Dictionary<string, ReleaseProviderSettings>(releaseProviders, StringComparer.Ordinal);
+        Retiring = retiring?.ToList() ?? new List<RetiringServiceSettings>();
     }
 
     /// <summary>Gets or sets the permanent API key, if configured.</summary>
@@ -137,6 +183,10 @@ public sealed class SvchostSettings
     [JsonPropertyName("releaseProviders")]
     public Dictionary<string, ReleaseProviderSettings>? ReleaseProviders { get; set; } =
         new(StringComparer.Ordinal);
+
+    /// <summary>Gets or sets durable service removals awaiting Host completion.</summary>
+    [JsonPropertyName("retiring")]
+    public List<RetiringServiceSettings> Retiring { get; set; } = new();
 
     /// <summary>Gets or sets reconciliation observability settings.</summary>
     [JsonPropertyName("observability")]
@@ -223,10 +273,90 @@ public sealed class SvchostSettings
             }
         }
 
+        if (Retiring is null)
+        {
+            errors.Add("retiring is required.");
+        }
+        else
+        {
+            var retiringServiceIds = new HashSet<Guid>();
+            foreach (var retirement in Retiring)
+            {
+                if (retirement is null)
+                {
+                    errors.Add("retiring entries must not be null.");
+                    continue;
+                }
+
+                if (!IsUuidV7(retirement.ServiceId))
+                {
+                    errors.Add("retiring.serviceId must be a UUID v7.");
+                }
+                else if (!retiringServiceIds.Add(retirement.ServiceId))
+                {
+                    errors.Add("retiring.serviceId values must be unique.");
+                }
+
+                if (!IsValidConfigName(retirement.ConfigName))
+                {
+                    errors.Add("retiring.configName has an invalid name.");
+                }
+
+                if (!IsValidName(retirement.ServiceName))
+                {
+                    errors.Add("retiring.serviceName has an invalid name.");
+                }
+
+                if (retirement.Scope is not ("global" or "document"))
+                {
+                    errors.Add("retiring.scope must be global or document.");
+                }
+
+                if (retirement.RouteIds is null)
+                {
+                    errors.Add("retiring.routeIds is required.");
+                }
+                else
+                {
+                    var routeIds = new HashSet<Guid>();
+                    foreach (var routeId in retirement.RouteIds)
+                    {
+                        if (!IsUuidV7(routeId))
+                        {
+                            errors.Add("retiring.routeIds must contain UUID v7 values.");
+                        }
+                        else if (!routeIds.Add(routeId))
+                        {
+                            errors.Add("retiring.routeIds must not contain duplicates.");
+                        }
+                    }
+                }
+            }
+        }
+
         return errors;
     }
 
-    private static bool IsUuidV7(Guid value)
+    internal static void AddRetirement(
+        IList<RetiringServiceSettings> retirements,
+        RetiringServiceSettings retirement)
+    {
+        ArgumentNullException.ThrowIfNull(retirements);
+        ArgumentNullException.ThrowIfNull(retirement);
+        var existing = retirements.FirstOrDefault(entry => entry.ServiceId == retirement.ServiceId);
+        if (existing is null)
+        {
+            retirements.Add(retirement);
+            return;
+        }
+
+        existing.RouteIds = (existing.RouteIds ?? new List<Guid>())
+            .Concat(retirement.RouteIds ?? new List<Guid>())
+            .Distinct()
+            .ToList();
+    }
+
+    internal static bool IsUuidV7(Guid value)
     {
         if (value == Guid.Empty)
         {
@@ -236,6 +366,15 @@ public sealed class SvchostSettings
         var bytes = value.ToByteArray();
         return (bytes[7] & 0xF0) == 0x70;
     }
+
+    private static bool IsValidConfigName(string? name) =>
+        IsValidName(name) && !name!.Equals("global", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsValidName(string? name) =>
+        System.Text.RegularExpressions.Regex.IsMatch(
+            name ?? string.Empty,
+            SvchostSettingsSchema.NamePattern,
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 }
 
 /// <summary>Contains the successful settings read together with its untouched raw JSON.</summary>

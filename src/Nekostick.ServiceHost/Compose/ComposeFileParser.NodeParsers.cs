@@ -40,11 +40,12 @@ public sealed partial class ComposeFileParser
         if (hasUrl)
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-                !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
             {
                 errors.Add(new ComposeValidationError(
                     $"{path}.url",
-                    "Source URLs must be absolute HTTPS URLs.",
+                    "Source URLs must be absolute HTTP or HTTPS URLs.",
                     Line(entries["url"])));
             }
         }

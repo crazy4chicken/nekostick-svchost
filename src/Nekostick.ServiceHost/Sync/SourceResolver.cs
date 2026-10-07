@@ -37,7 +37,7 @@ public sealed record SourceResolutionResult(
         };
 }
 
-/// <summary>Resolves HTTPS, local, and provider release sources into reproducible artifacts.</summary>
+/// <summary>Resolves HTTP/HTTPS, local, and provider release sources into reproducible artifacts.</summary>
 public sealed partial class SourceResolver
 {
     /// <summary>The default maximum artifact size.</summary>
@@ -131,6 +131,26 @@ public sealed partial class SourceResolver
         CancellationToken cancellationToken) =>
         ResolveCoreAsync(serviceRootDirectory, serviceName, source, previousLock, releaseProviderSettings, cancellationToken);
 
+    internal static LockSource PreserveUnchangedSourceLock(LockSource? existing, LockSource candidate)
+    {
+        if (existing is null ||
+            !string.Equals(existing.Kind, candidate.Kind, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(existing.Url, candidate.Url, StringComparison.Ordinal) ||
+            !string.Equals(existing.Path, candidate.Path, StringComparison.Ordinal) ||
+            !string.Equals(existing.ProviderKey, candidate.ProviderKey, StringComparison.Ordinal) ||
+            !string.Equals(existing.Spec, candidate.Spec, StringComparison.Ordinal) ||
+            !string.Equals(existing.Tag, candidate.Tag, StringComparison.Ordinal) ||
+            !string.Equals(existing.Version, candidate.Version, StringComparison.Ordinal) ||
+            !string.Equals(existing.AssetName, candidate.AssetName, StringComparison.Ordinal) ||
+            !string.Equals(existing.Sha256, candidate.Sha256, StringComparison.OrdinalIgnoreCase) ||
+            existing.Size != candidate.Size)
+        {
+            return candidate;
+        }
+
+        return existing;
+    }
+
     private ValueTask<SourceResolutionResult> ResolveForConfigAsync(
         string dataDirectory,
         string configName,
@@ -185,10 +205,9 @@ public sealed partial class SourceResolver
         }
 
         var configDirectory = Path.GetFullPath(serviceRootDirectory);
-        var artifactDirectory = Path.Combine(configDirectory, "artifacts");
+        var serviceArtifactDirectory = Path.Combine(configDirectory, "artifacts", "sha256", serviceName);
         var temporaryDirectory = Path.Combine(configDirectory, "tmp");
-        var artifactPath = Path.Combine(artifactDirectory, serviceName);
-        Directory.CreateDirectory(artifactDirectory);
+        Directory.CreateDirectory(serviceArtifactDirectory);
         Directory.CreateDirectory(temporaryDirectory);
 
         if (source.Release is not null)
@@ -199,17 +218,19 @@ public sealed partial class SourceResolver
                     previousLock,
                     releaseProviderSettings,
                     _releaseProviders,
-                    artifactPath,
+                    serviceArtifactDirectory,
                     temporaryDirectory,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
+
         if (source.Url is not null)
         {
             return await ResolveUrlAsync(
                     source,
+                    serviceName,
                     previousLock,
-                    artifactPath,
+                    serviceArtifactDirectory,
                     temporaryDirectory,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -219,8 +240,9 @@ public sealed partial class SourceResolver
         {
             return await ResolvePathAsync(
                     source,
+                    serviceName,
                     previousLock,
-                    artifactPath,
+                    serviceArtifactDirectory,
                     temporaryDirectory,
                     cancellationToken)
                 .ConfigureAwait(false);

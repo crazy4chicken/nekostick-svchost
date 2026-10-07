@@ -7,48 +7,57 @@ public sealed partial class SourceResolver
 {
     private async ValueTask<SourceResolutionResult> ResolveUrlAsync(
         ComposeSource source,
+        string serviceName,
         LockSource? previousLock,
-        string artifactPath,
+        string serviceArtifactDirectory,
         string temporaryDirectory,
         CancellationToken cancellationToken)
     {
         var url = source.Url!;
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+             !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
         {
-            return SourceResolutionResult.Failure("Source URLs must be absolute HTTPS URLs.");
+            return SourceResolutionResult.Failure("Source URLs must be absolute HTTP or HTTPS URLs.");
         }
 
         var sameSource = previousLock?.MatchesUrl(url) == true &&
                          IsValidDigest(previousLock.Sha256);
-        if (sameSource && File.Exists(artifactPath))
+        var existingArtifactPath = sameSource
+            ? GetContentAddressedFilePath(serviceArtifactDirectory, serviceName, previousLock!.Sha256!)
+            : string.Empty;
+        if (sameSource && File.Exists(existingArtifactPath))
         {
-            var digest = await ComputeDigestAsync(artifactPath, cancellationToken).ConfigureAwait(false);
+            var digest = await ComputeDigestAsync(existingArtifactPath, cancellationToken).ConfigureAwait(false);
             if (string.Equals(digest, previousLock!.Sha256, StringComparison.OrdinalIgnoreCase) &&
                 MatchesExplicitDigest(source.Sha256, digest))
             {
-                return SourceResolutionResult.Success(artifactPath, previousLock, true);
+                return SourceResolutionResult.Success(existingArtifactPath, previousLock, true);
             }
         }
 
         return await DownloadAsync(
                 uri,
-                artifactPath,
+                serviceName,
+                serviceArtifactDirectory,
                 temporaryDirectory,
                 sameSource ? previousLock!.Sha256 : null,
                 source.Sha256,
                 url,
+                previousLock,
                 cancellationToken)
             .ConfigureAwait(false);
     }
 
     private async ValueTask<SourceResolutionResult> DownloadAsync(
         Uri uri,
-        string artifactPath,
+        string serviceName,
+        string serviceArtifactDirectory,
         string temporaryDirectory,
         string? expectedLockedDigest,
         string? expectedDeclaredDigest,
         string url,
+        LockSource? previousLock,
         CancellationToken cancellationToken)
     {
         Exception? lastException = null;
@@ -114,16 +123,22 @@ public sealed partial class SourceResolver
                         "The downloaded source does not match the locked or declared sha256.");
                 }
 
-                AtomicInstall(temporaryPath, artifactPath);
+                var artifactPath = GetContentAddressedFilePath(serviceArtifactDirectory, serviceName, digest);
+                await InstallContentAddressedFileAsync(
+                        temporaryPath,
+                        artifactPath,
+                        digest,
+                        cancellationToken)
+                    .ConfigureAwait(false);
                 var fileInfo = new FileInfo(artifactPath);
-                var locked = new LockSource
+                var locked = PreserveUnchangedSourceLock(previousLock, new LockSource
                 {
                     Kind = "url",
                     Url = url,
                     Sha256 = digest,
                     Size = fileInfo.Length,
                     FetchedAt = DateTimeOffset.UtcNow
-                };
+                });
                 return SourceResolutionResult.Success(artifactPath, locked, false);
             }
             catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)

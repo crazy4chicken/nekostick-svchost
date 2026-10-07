@@ -101,7 +101,7 @@ public sealed class ComposeSource
         Release = string.IsNullOrWhiteSpace(release) ? null : release;
     }
 
-    /// <summary>Gets the HTTPS source URL, if present.</summary>
+    /// <summary>Gets the HTTP or HTTPS source URL, if present.</summary>
     public string? Url { get; }
 
     /// <summary>Gets the local source path, if present.</summary>

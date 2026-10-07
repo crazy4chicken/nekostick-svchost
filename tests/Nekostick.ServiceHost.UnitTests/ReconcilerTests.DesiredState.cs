@@ -45,10 +45,13 @@ public sealed partial class ReconcilerTests
             await File.WriteAllTextAsync(dbSourcePath, "db-v1");
 
             var dataDirectory = Path.Combine(root, "data");
-            var artifactDirectory = Path.Combine(dataDirectory, "svchost", "demo", "artifacts");
-            Directory.CreateDirectory(artifactDirectory);
-            File.Copy(apiSourcePath, Path.Combine(artifactDirectory, "api"));
-            File.Copy(dbSourcePath, Path.Combine(artifactDirectory, "db"));
+            var serviceRoot = Path.Combine(dataDirectory, "svchost", "demo");
+            var apiArtifact = GetContentAddressedArtifactPath(serviceRoot, "api", apiSourcePath);
+            var dbArtifact = GetContentAddressedArtifactPath(serviceRoot, "db", dbSourcePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(apiArtifact)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(dbArtifact)!);
+            File.Copy(apiSourcePath, apiArtifact);
+            File.Copy(dbSourcePath, dbArtifact);
 
             var apiServiceId = Guid.CreateVersion7();
             var dbServiceId = Guid.CreateVersion7();
@@ -196,15 +199,15 @@ public sealed partial class ReconcilerTests
             var globalRoot = Path.GetFullPath(Path.Combine(dataDirectory, "svchost", "global"));
             var documentRoot = Path.GetFullPath(Path.Combine(dataDirectory, "svchost", "document"));
             var globalWorker = full.Snapshot.Services.Single(service =>
-                service.FileName == Path.Combine(globalRoot, "artifacts", "worker"));
+                service.FileName == GetContentAddressedArtifactPath(globalRoot, "worker", globalWorkerSourcePath));
             var globalShared = full.Snapshot.Services.Single(service =>
-                service.FileName == Path.Combine(globalRoot, "artifacts", "shared"));
+                service.FileName == GetContentAddressedArtifactPath(globalRoot, "shared", globalSharedSourcePath));
             var globalOnly = full.Snapshot.Services.Single(service =>
-                service.FileName == Path.Combine(globalRoot, "artifacts", "global-only"));
+                service.FileName == GetContentAddressedArtifactPath(globalRoot, "global-only", globalOnlySourcePath));
             var documentShared = full.Snapshot.Services.Single(service =>
-                service.FileName == Path.Combine(documentRoot, "artifacts", "shared"));
+                service.FileName == GetContentAddressedArtifactPath(documentRoot, "shared", documentSharedSourcePath));
             var documentApp = full.Snapshot.Services.Single(service =>
-                service.FileName == Path.Combine(documentRoot, "artifacts", "app"));
+                service.FileName == GetContentAddressedArtifactPath(documentRoot, "app", documentAppSourcePath));
 
             Assert.Equal(globalRoot, globalWorker.WorkingDirectory);
             Assert.Equal(globalRoot, globalShared.WorkingDirectory);
@@ -293,8 +296,10 @@ public sealed partial class ReconcilerTests
             Assert.Equal(0, full.ReplaceCallCount);
             Assert.Contains(full.Snapshot.Services, service => service.Id == serviceId);
             Assert.Contains(full.Snapshot.Routes, route => route.Id == routeId);
-            Assert.Equal("alpha-service", await File.ReadAllTextAsync(artifactPath));
-            Assert.False(File.Exists(Path.Combine(globalRoot, "artifacts", "worker")));
+            Assert.Equal("existing-owner-artifact", await File.ReadAllTextAsync(artifactPath));
+            var alphaArtifactPath = GetContentAddressedArtifactPath(globalRoot, "api", alphaSourcePath);
+            Assert.Equal("alpha-service", await File.ReadAllTextAsync(alphaArtifactPath));
+            Assert.False(Directory.Exists(Path.Combine(globalRoot, "artifacts", "sha256", "worker")));
 
             Assert.True(Assert.Single(report.Services, service => service.ConfigName == "alpha").Succeeded);
             var failedConfigServices = report.Services
@@ -360,7 +365,10 @@ public sealed partial class ReconcilerTests
             Assert.Contains("missing", apiReport.Error!, StringComparison.Ordinal);
             Assert.True(Assert.Single(report.Services, service => service.ServiceName == "worker").Succeeded);
             Assert.Contains(full.Snapshot.Services, service =>
-                service.FileName == Path.Combine(dataDirectory, "svchost", "demo", "artifacts", "worker"));
+                service.FileName == GetContentAddressedArtifactPath(
+                    Path.Combine(dataDirectory, "svchost", "demo"),
+                    "worker",
+                    workerSourcePath));
         }
         finally
         {

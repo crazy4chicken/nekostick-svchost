@@ -12,47 +12,69 @@ public sealed partial class Reconciler
     /// </summary>
     public ConfigurationChangeSet BuildChangeSet(
         HostConfigurationSnapshot snapshot,
-        IEnumerable<Guid> managedServiceIds,
         IEnumerable<Guid> managedRouteIds,
         IEnumerable<ServiceConfiguration> desiredServices,
         IEnumerable<RouteConfiguration> desiredRoutes,
+        IEnumerable<Guid>? retiringServiceIds = null,
         IEnumerable<Guid>? preservedServiceIds = null,
         IEnumerable<Guid>? preservedRouteIds = null,
-        IEnumerable<Guid>? configuredLockServiceIds = null,
-        IEnumerable<Guid>? deferredServiceRemovalIds = null,
-        IEnumerable<Guid>? forceServiceRemovalIds = null)
+        ExtensionSettingsConfiguration? updatedSettings = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        ArgumentNullException.ThrowIfNull(managedServiceIds);
         ArgumentNullException.ThrowIfNull(managedRouteIds);
         ArgumentNullException.ThrowIfNull(desiredServices);
         ArgumentNullException.ThrowIfNull(desiredRoutes);
 
-        var managedServices = managedServiceIds.ToHashSet();
         var desiredServiceArray = desiredServices.ToImmutableArray();
-        var desiredServiceIds = desiredServiceArray.Select(service => service.Id).ToHashSet();
-        foreach (var desired in desiredServiceArray)
+        var desiredById = desiredServiceArray.ToDictionary(service => service.Id);
+        var retiringServices = retiringServiceIds?.ToHashSet() ?? new HashSet<Guid>();
+        var preservedServices = preservedServiceIds?.ToHashSet() ?? new HashSet<Guid>();
+        var snapshotServiceIds = snapshot.Services.Select(service => service.Id).ToHashSet();
+        var services = ImmutableArray.CreateBuilder<ServiceConfiguration>(
+            snapshot.Services.Length + desiredServiceArray.Count(service => !snapshotServiceIds.Contains(service.Id)));
+        foreach (var existing in snapshot.Services)
         {
-            managedServices.Add(desired.Id);
+            if (desiredById.TryGetValue(existing.Id, out var desired))
+            {
+                services.Add(PreserveServiceVersion(desired, snapshot, out _));
+            }
+            else if (!retiringServices.Contains(existing.Id) ||
+                     preservedServices.Contains(existing.Id) ||
+                     !existing.Enabled)
+            {
+                services.Add(existing);
+            }
+            else
+            {
+                var disabled = new ServiceConfiguration(
+                    existing.Id,
+                    false,
+                    existing.FileName,
+                    existing.ArgumentList,
+                    existing.WorkingDirectory,
+                    existing.Environment,
+                    existing.StartMode,
+                    existing.RestartPolicy,
+                    existing.HealthCheck,
+                    existing.CreatedAt,
+                    DateTimeOffset.UtcNow,
+                    existing.Version);
+                services.Add(PreserveServiceVersion(disabled, snapshot, out _));
+            }
         }
 
-        var preservedServices = preservedServiceIds?.ToHashSet() ?? new HashSet<Guid>();
-        var lockServiceIds = configuredLockServiceIds?.ToHashSet() ?? managedServices;
-        var orphanSweep = FindOrphanSweep(snapshot, lockServiceIds, desiredServiceIds);
-        var deferredRemovals = deferredServiceRemovalIds?.ToHashSet() ?? new HashSet<Guid>();
-        var forcedRemovals = forceServiceRemovalIds?.ToHashSet() ?? new HashSet<Guid>();
-        var services = snapshot.Services
-            .Where(service =>
-                (!managedServices.Contains(service.Id) ||
-                    preservedServices.Contains(service.Id) ||
-                    deferredRemovals.Contains(service.Id)) &&
-                (!orphanSweep.ServiceIds.Contains(service.Id) || deferredRemovals.Contains(service.Id)) &&
-                !forcedRemovals.Contains(service.Id))
-            .Concat(desiredServiceArray)
-            .ToImmutableArray();
+        foreach (var desired in desiredServiceArray)
+        {
+            if (!snapshotServiceIds.Contains(desired.Id))
+            {
+                services.Add(desired);
+            }
+        }
 
         var managedRoutes = managedRouteIds.ToHashSet();
-        var desiredRouteArray = desiredRoutes.ToImmutableArray();
+        var desiredRouteArray = desiredRoutes
+            .Select(route => PreserveRouteVersion(route, snapshot))
+            .ToImmutableArray();
         foreach (var desired in desiredRouteArray)
         {
             managedRoutes.Add(desired.Id);
@@ -76,17 +98,39 @@ public sealed partial class Reconciler
             .Concat(desiredRouteArray)
             .ToImmutableArray();
 
-        foreach (var note in orphanSweep.Notes)
+        var extensionSettings = snapshot.ExtensionSettings;
+        if (updatedSettings is not null)
         {
-            System.Diagnostics.Debug.WriteLine($"{Owner}: {note}");
+            var settingsBuilder = ImmutableArray.CreateBuilder<ExtensionSettingsConfiguration>(
+                snapshot.ExtensionSettings.Length);
+            var foundSvchostSettings = false;
+            foreach (var current in snapshot.ExtensionSettings)
+            {
+                if (string.Equals(current.ExtensionId, Owner, StringComparison.Ordinal))
+                {
+                    settingsBuilder.Add(updatedSettings);
+                    foundSvchostSettings = true;
+                }
+                else
+                {
+                    settingsBuilder.Add(current);
+                }
+            }
+
+            if (!foundSvchostSettings)
+            {
+                throw new InvalidOperationException("The svchost settings row is absent from the full Host snapshot.");
+            }
+
+            extensionSettings = settingsBuilder.ToImmutable();
         }
 
         return new ConfigurationChangeSet(
             snapshot.GlobalSettings,
             routes,
-            services,
+            services.ToImmutable(),
             snapshot.ExtensionRecords,
-            snapshot.ExtensionSettings);
+            extensionSettings);
     }
 
     private static ServiceConfiguration PreserveServiceVersion(
@@ -254,7 +298,7 @@ public sealed partial class Reconciler
             desired.MaxConcurrentRequests,
             desired.RequestReadTimeout,
             desired.ProxyRetries,
-            ownerExtensionId: desired.OwnerExtensionId);
+            ownerExtensionId: existing.OwnerExtensionId);
         return SemanticallyEqualIgnoringVersion(preserved, existing) ? existing : preserved;
     }
 
@@ -340,6 +384,22 @@ public sealed partial class Reconciler
         left.MaxConcurrentRequests == right.MaxConcurrentRequests &&
         left.RequestReadTimeout == right.RequestReadTimeout &&
         Equals(left.ProxyRetries, right.ProxyRetries);
+
+    private static bool SemanticallyEqualIgnoringVersion(
+        ImmutableArray<ExtensionSettingsConfiguration> left,
+        ImmutableArray<ExtensionSettingsConfiguration> right)
+    {
+        if (left.Length != right.Length)
+        {
+            return false;
+        }
+
+        var rightById = right.ToDictionary(settings => settings.ExtensionId, StringComparer.Ordinal);
+        return left.All(settings =>
+            rightById.TryGetValue(settings.ExtensionId, out var other) &&
+            settings.SchemaVersion == other.SchemaVersion &&
+            MetadataJsonEqual(settings.SettingsJson, other.SettingsJson));
+    }
 
     private static bool EnvironmentEquals(
         ImmutableDictionary<string, string> left,
@@ -523,8 +583,16 @@ public sealed partial class Reconciler
         return new OrphanSweep(orphanServices, orphanRoutes, notes.ToImmutable());
     }
 
-    private static bool IsOwnedRoute(string metadataJson)
+    internal static bool IsOwnedRoute(string? metadataJson) =>
+        TryGetOwnedRouteMetadata(metadataJson, out _, out _);
+
+    private static bool TryGetOwnedRouteMetadata(
+        string? metadataJson,
+        out string configName,
+        out string serviceName)
     {
+        configName = string.Empty;
+        serviceName = string.Empty;
         if (string.IsNullOrWhiteSpace(metadataJson))
         {
             return false;
@@ -533,20 +601,24 @@ public sealed partial class Reconciler
         try
         {
             using var document = JsonDocument.Parse(metadataJson);
-            if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                !document.RootElement.TryGetProperty("owner", out var owner) ||
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("owner", out var owner) ||
                 owner.ValueKind != JsonValueKind.String ||
-                !string.Equals(owner.GetString(), Owner, StringComparison.Ordinal))
+                !string.Equals(owner.GetString(), Owner, StringComparison.Ordinal) ||
+                !root.TryGetProperty("config", out var config) ||
+                config.ValueKind != JsonValueKind.String ||
+                string.IsNullOrWhiteSpace(config.GetString()) ||
+                !root.TryGetProperty("service", out var service) ||
+                service.ValueKind != JsonValueKind.String ||
+                string.IsNullOrWhiteSpace(service.GetString()))
             {
                 return false;
             }
 
-            return document.RootElement.TryGetProperty("config", out var config) &&
-                   config.ValueKind == JsonValueKind.String &&
-                   !string.IsNullOrWhiteSpace(config.GetString()) &&
-                   document.RootElement.TryGetProperty("service", out var service) &&
-                   service.ValueKind == JsonValueKind.String &&
-                   !string.IsNullOrWhiteSpace(service.GetString());
+            configName = config.GetString()!;
+            serviceName = service.GetString()!;
+            return true;
         }
         catch (JsonException)
         {

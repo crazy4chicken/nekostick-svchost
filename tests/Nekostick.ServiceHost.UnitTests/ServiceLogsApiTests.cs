@@ -225,7 +225,8 @@ public sealed class ServiceLogsApiTests
     {
         var configurationApi = new FakeConfigurationApi();
         var settingsStore = new SettingsStore(configurationApi);
-        var bridge = new FakeBridge { DataDirectory = dataDirectory };
+        var initializationFullConfiguration = new FakeFullConfigurationApi(CreateHostConfigurationSnapshot());
+        var bridge = new FakeBridge { DataDirectory = dataDirectory, FullConfiguration = initializationFullConfiguration };
         var apiKeyService = new ApiKeyService(settingsStore, bridge);
         var initialization = await apiKeyService.InitializeAsync();
         Assert.True(initialization.Succeeded);

@@ -37,27 +37,15 @@ public sealed partial class Reconciler
     }
 
     /// <summary>Runs one complete serialized reconciliation.</summary>
-    public ValueTask<SyncReport> ReconcileAsync(string trigger, CancellationToken cancellationToken = default) =>
-        ReconcileAsync(Array.Empty<Guid>(), Array.Empty<Guid>(), trigger, cancellationToken);
-
-    /// <summary>
-    /// Runs reconciliation while also removing IDs from a configuration deleted by a caller.
-    /// </summary>
     public async ValueTask<SyncReport> ReconcileAsync(
-        IEnumerable<Guid> extraManagedServiceIds,
-        IEnumerable<Guid> extraManagedRouteIds,
         string trigger,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(extraManagedServiceIds);
-        ArgumentNullException.ThrowIfNull(extraManagedRouteIds);
-
-        var extraServices = extraManagedServiceIds.ToHashSet();
-        var extraRoutes = extraManagedRouteIds.ToHashSet();
+        ArgumentException.ThrowIfNullOrWhiteSpace(trigger);
         await _serializationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var report = await ReconcileCoreAsync(extraServices, extraRoutes, cancellationToken).ConfigureAwait(false);
+            var report = await ReconcileCoreAsync(cancellationToken).ConfigureAwait(false);
             return report with { Trigger = trigger };
         }
         finally

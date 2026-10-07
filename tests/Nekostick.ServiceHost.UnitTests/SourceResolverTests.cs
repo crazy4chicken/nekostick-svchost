@@ -125,6 +125,38 @@ public sealed class SourceResolverTests
     }
 
     [Fact]
+    public async Task Resolve_local_path_recopying_same_content_preserves_FetchedAt()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var sourcePath = Path.Combine(root, "source.bin");
+            var dataDirectory = Path.Combine(root, "data");
+            await File.WriteAllTextAsync(sourcePath, "version-one");
+            var resolver = new SourceResolver();
+            var source = new ComposeSource(null, sourcePath);
+            var first = await resolver.ResolveAsync(dataDirectory, "demo", "api", source, null);
+            Assert.True(first.Succeeded);
+            var previousLock = first.Source!;
+            var previousFetchedAt = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            previousLock.FetchedAt = previousFetchedAt;
+            File.Delete(first.ArtifactPath!);
+
+            var second = await resolver.ResolveAsync(dataDirectory, "demo", "api", source, previousLock);
+
+            Assert.True(second.Succeeded);
+            var secondSource = second.Source!;
+            Assert.False(second.Reused);
+            Assert.Equal(previousLock.Sha256, secondSource.Sha256);
+            Assert.Equal(previousFetchedAt, secondSource.FetchedAt);
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+    [Fact]
     public async Task Resolve_local_path_drift_copies_new_artifact_and_relocks()
     {
         var root = CreateTempDirectory();
@@ -136,14 +168,18 @@ public sealed class SourceResolverTests
             var resolver = new SourceResolver();
             var source = new ComposeSource(null, sourcePath);
             var first = await resolver.ResolveAsync(dataDirectory, "demo", "api", source, null);
+            var firstSource = first.Source!;
+            var previousFetchedAt = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            firstSource.FetchedAt = previousFetchedAt;
             await File.WriteAllTextAsync(sourcePath, "version-two");
 
-            var drifted = await resolver.ResolveAsync(dataDirectory, "demo", "api", source, first.Source);
+            var drifted = await resolver.ResolveAsync(dataDirectory, "demo", "api", source, firstSource);
 
             Assert.True(drifted.Succeeded);
             Assert.False(drifted.Reused);
-            Assert.NotEqual(first.Source!.Sha256, drifted.Source!.Sha256);
+            Assert.NotEqual(firstSource.Sha256, drifted.Source!.Sha256);
             Assert.Equal("version-two", await File.ReadAllTextAsync(drifted.ArtifactPath!));
+            Assert.NotEqual(previousFetchedAt, drifted.Source!.FetchedAt);
         }
         finally
         {

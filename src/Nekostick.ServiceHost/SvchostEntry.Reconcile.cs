@@ -15,8 +15,6 @@ public sealed partial class SvchostEntry
     private const int MaximumServiceDiffSummaryLength = 384;
 
     private async ValueTask<SyncReport> ReconcileTrackedAsync(
-        IEnumerable<Guid> extraServiceIds,
-        IEnumerable<Guid> extraRouteIds,
         string trigger,
         CancellationToken cancellationToken)
     {
@@ -39,17 +37,17 @@ public sealed partial class SvchostEntry
                 throw new InvalidOperationException("The extension reconciler is unavailable.");
             }
 
-            var report = await reconciler.ReconcileAsync(
-                    extraServiceIds,
-                    extraRouteIds,
-                    trigger,
-                    cancellationToken)
+            var report = await reconciler.ReconcileAsync(trigger, cancellationToken)
                 .ConfigureAwait(false);
             if (settingsStore is not null)
             {
+                var selfSettledVersion = report.CommittedSettingsVersion ?? report.ConsumedSettingsVersion;
                 await StashSettledSettingsVersionAsync(
                         settingsStore,
-                        report.ConsumedSettingsVersion,
+                        selfSettledVersion,
+                        report.Succeeded ||
+                            report.FailureCode == SyncErrorCode.RemovalPending ||
+                            report.CommittedSettingsVersion.HasValue,
                         report.Succeeded)
                     .ConfigureAwait(false);
             }
@@ -444,19 +442,20 @@ public sealed partial class SvchostEntry
 
     private ValueTask StashSettledSettingsVersionAsync(
         SettingsStore settingsStore,
-        long? consumedSettingsVersion,
+        long? settingsVersion,
+        bool selfSettled,
         bool settled)
     {
         lock (_lifecycleGate)
         {
             if (ReferenceEquals(_settingsStore, settingsStore))
             {
-                if (consumedSettingsVersion.HasValue)
+                if (settingsVersion.HasValue)
                 {
-                    _lastReconcilerConsumedSettingsVersion = consumedSettingsVersion.Value;
-                    if (settled)
+                    _lastReconcilerConsumedSettingsVersion = settingsVersion.Value;
+                    if (selfSettled)
                     {
-                        _lastSelfSettledSettingsVersion = consumedSettingsVersion.Value;
+                        _lastSelfSettledSettingsVersion = settingsVersion.Value;
                     }
                 }
 
@@ -465,7 +464,7 @@ public sealed partial class SvchostEntry
                     _reconcileUnsettled = false;
                     _driftForcedRetryTickCount = 0;
                 }
-                else if (consumedSettingsVersion.HasValue)
+                else if (settingsVersion.HasValue)
                 {
                     _reconcileUnsettled = true;
                     _driftForcedRetryTickCount = 0;

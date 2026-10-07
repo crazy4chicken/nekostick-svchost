@@ -63,7 +63,14 @@ public sealed partial class ApiKeyService
         {
             if (HasError(result.Errors, ConfigurationErrorCode.Unsupported))
             {
-                SetReadonly(Settings);
+                if (_bridge.HostInfo.ReadOnly)
+                {
+                    SetReadonly(Settings);
+                }
+                else
+                {
+                    ReportDegraded("settings-write-failed");
+                }
             }
 
             return result;

@@ -11,14 +11,13 @@ public sealed partial class Reconciler
     private sealed record DesiredStatePlan(
         List<ServiceSyncReport> Reports,
         List<DesiredServiceState> Desired,
-        HashSet<Guid> ManagedServiceIds,
         HashSet<Guid> ManagedRouteIds,
         HashSet<Guid> ConfiguredLockServiceIds,
         HashSet<Guid> SourceFailureServiceIds,
         HashSet<Guid> SourceFailureRouteIds,
         Dictionary<(string ConfigName, string ServiceName), LockServiceEntry> UpdatedLocks,
         Dictionary<string, ImmutableHashSet<string>> ConfigServiceNames,
-        Dictionary<string, string> ConfigYamls,
+        List<RetiringServiceSettings> RetirementsToAdd,
         bool HasConfigFailure);
 
     private sealed class ConfigWork
@@ -62,24 +61,25 @@ public sealed partial class Reconciler
 
     private async ValueTask<DesiredStatePlan> BuildDesiredStateAsync(
         SvchostSettings settings,
-        IReadOnlySet<Guid> extraManagedServiceIds,
-        IReadOnlySet<Guid> extraManagedRouteIds,
         CancellationToken cancellationToken)
     {
         var reports = new List<ServiceSyncReport>();
         var desired = new List<DesiredServiceState>();
-        var managedServiceIds = new HashSet<Guid>();
         var managedRouteIds = new HashSet<Guid>();
         var configuredLockServiceIds = new HashSet<Guid>();
         var sourceFailureServiceIds = new HashSet<Guid>();
         var sourceFailureRouteIds = new HashSet<Guid>();
         var updatedLocks = new Dictionary<(string ConfigName, string ServiceName), LockServiceEntry>();
         var configServiceNames = new Dictionary<string, ImmutableHashSet<string>>(StringComparer.Ordinal);
-        var configYamls = new Dictionary<string, string>(StringComparer.Ordinal);
+        var retirementsToAdd = new List<RetiringServiceSettings>();
         var configWork = new List<ConfigWork>();
         var hasConfigFailure = false;
-        managedServiceIds.UnionWith(extraManagedServiceIds);
-        managedRouteIds.UnionWith(extraManagedRouteIds);
+
+        foreach (var retirement in settings.Retiring)
+        {
+            configuredLockServiceIds.Add(retirement.ServiceId);
+            managedRouteIds.UnionWith(retirement.RouteIds);
+        }
 
         foreach (var configPair in settings.Configs.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
@@ -102,7 +102,6 @@ public sealed partial class Reconciler
                 }
                 if (IsUuidV7(oldLock.ServiceId))
                 {
-                    managedServiceIds.Add(oldLock.ServiceId);
                     configuredLockServiceIds.Add(oldLock.ServiceId);
                 }
 
@@ -132,7 +131,26 @@ public sealed partial class Reconciler
                 .OrderBy(name => name, StringComparer.Ordinal)
                 .ToImmutableArray();
             configServiceNames[work.ConfigName] = work.ServiceNames.ToImmutableHashSet(StringComparer.Ordinal);
-            configYamls[work.ConfigName] = config.Yaml ?? string.Empty;
+            var scope = compose.ServiceScope == ComposeServiceScope.Document ? "document" : "global";
+            foreach (var lockPair in work.LockServices.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                if (work.ServiceNames.Contains(lockPair.Key, StringComparer.Ordinal) ||
+                    lockPair.Value is null ||
+                    !IsUuidV7(lockPair.Value.ServiceId))
+                {
+                    continue;
+                }
+
+                configuredLockServiceIds.Add(lockPair.Value.ServiceId);
+                SvchostSettings.AddRetirement(
+                    retirementsToAdd,
+                    new RetiringServiceSettings(
+                        lockPair.Value.ServiceId,
+                        (lockPair.Value.RouteIds ?? new List<Guid>()).Where(IsUuidV7),
+                        work.ConfigName,
+                        IsValidServiceName(lockPair.Key) ? lockPair.Key : "orphan",
+                        scope));
+            }
         }
 
         var globalServiceOwners = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -405,7 +423,6 @@ public sealed partial class Reconciler
                     lockEntry,
                     resolved.Reused));
                 updatedLocks[(configName, serviceName)] = lockEntry;
-                managedServiceIds.Add(serviceId);
                 foreach (var routeId in routeIds)
                 {
                     managedRouteIds.Add(routeId);
@@ -428,14 +445,13 @@ public sealed partial class Reconciler
         return new DesiredStatePlan(
             reports,
             desired,
-            managedServiceIds,
             managedRouteIds,
             configuredLockServiceIds,
             sourceFailureServiceIds,
             sourceFailureRouteIds,
             updatedLocks,
             configServiceNames,
-            configYamls,
+            retirementsToAdd,
             hasConfigFailure);
     }
 
@@ -471,8 +487,7 @@ public sealed partial class Reconciler
             metadata,
             now,
             now,
-            0,
-            ownerExtensionId: Owner);
+            0);
     }
 
     private static List<Guid> ResolveRouteIds(ComposeRoute? route, LockServiceEntry? previous)
@@ -512,14 +527,11 @@ public sealed partial class Reconciler
         return parts.Length >= 2 ? parts[1] : string.Empty;
     }
 
-    private static bool IsUuidV7(Guid value)
-    {
-        if (value == Guid.Empty)
-        {
-            return false;
-        }
+    private static bool IsUuidV7(Guid value) => SvchostSettings.IsUuidV7(value);
 
-        var bytes = value.ToByteArray();
-        return (bytes[7] & 0xF0) == 0x70;
-    }
+    private static bool IsValidServiceName(string? name) =>
+        System.Text.RegularExpressions.Regex.IsMatch(
+            name ?? string.Empty,
+            SvchostSettingsSchema.NamePattern,
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 }

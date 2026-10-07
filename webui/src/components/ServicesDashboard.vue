@@ -93,15 +93,15 @@ function reconcileTip(svc: ManagedService): string {
 async function action(svc: ManagedService, kind: 'start' | 'stop' | 'restart') {
   pendingAction.value = `${svc.config}/${svc.service}/${kind}`
   try {
-    // Reconcile-level failures arrive as HTTP 200 with succeeded:false and the
-    // backend's message (e.g. 'disable phase failed').
+    // Operational failures arrive as HTTP 200 with succeeded:false and the
+    // backend's message, including Host validation failures from restart.
     const res = await api.serviceAction(svc.config, svc.service, kind)
     const suffix = res.asynchronous ? ' The supervisor applies it asynchronously.' : ''
     if (!res.succeeded) {
       message.error(res.message || `${kind} of "${svc.service}" failed.`)
     } else if (kind === 'restart') {
       message.info(
-        `${res.message || `Restart of "${svc.service}" requested.`} The platform has no global restart, so this is a disable + reconcile + enable + reconcile; it completes asynchronously.`,
+        `${res.message || `Restart of "${svc.service}" requested on this node.`} It does not change cluster-wide desired state.`,
       )
     } else {
       message.success(`${res.message || `${kind} of "${svc.service}" requested.`}${suffix}`)
@@ -279,8 +279,8 @@ onMounted(load)
                         Restart
                       </n-button>
                     </template>
-                    Restart "{{ svc.service }}"? Traffic stops for a few seconds while the
-                    service is disabled, reconciled, re-enabled, and reconciled again.
+                    Restart "{{ svc.service }}" on this node? The request does not change
+                    cluster-wide desired state.
                   </n-popconfirm>
                 </td>
               </tr>
