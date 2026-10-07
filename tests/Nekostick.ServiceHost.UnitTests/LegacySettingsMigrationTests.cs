@@ -31,7 +31,7 @@ public sealed class LegacySettingsMigrationTests
             settings => settings.ExtensionId == SvchostSettingsSchema.ExtensionId);
         Assert.Equal(legacy.SettingsJson, migrated.SettingsJson);
         Assert.Equal(legacy.SchemaVersion, migrated.SchemaVersion);
-        Assert.Equal(0, migrated.Version);
+        Assert.Equal(1, migrated.Version);
         Assert.DoesNotContain(
             fullConfiguration.Snapshot.ExtensionSettings,
             settings => settings.ExtensionId == SvchostSettingsSchema.LegacyExtensionId);
