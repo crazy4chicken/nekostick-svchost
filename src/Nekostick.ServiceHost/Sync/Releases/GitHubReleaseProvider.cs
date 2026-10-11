@@ -28,6 +28,7 @@ public sealed class GitHubReleaseProvider : IReleaseProvider
         ReleaseSource source,
         string serviceId,
         string arch,
+        string platform,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -38,9 +39,10 @@ public sealed class GitHubReleaseProvider : IReleaseProvider
                 "GitHub release specs must use the format '{owner}/{repo}@{ref}' with non-empty owner, repo, and ref values.");
         }
 
-        if (string.IsNullOrEmpty(serviceId) || string.IsNullOrEmpty(arch))
+        if (string.IsNullOrEmpty(serviceId) || string.IsNullOrEmpty(arch) || string.IsNullOrEmpty(platform))
         {
-            return ReleaseProviderResult.Failure("A service ID and architecture are required to select a GitHub release asset.");
+            return ReleaseProviderResult.Failure(
+                "A service ID, architecture, and platform are required to select a GitHub release asset.");
         }
 
         var repositoryName = $"{owner}/{repository}";
@@ -115,14 +117,22 @@ public sealed class GitHubReleaseProvider : IReleaseProvider
                 continue;
             }
 
-            var version = asset.Name.Substring(prefix.Length, asset.Name.Length - prefix.Length - suffix.Length);
+            var middle = asset.Name.Substring(prefix.Length, asset.Name.Length - prefix.Length - suffix.Length);
+            var separator = middle.LastIndexOf('_');
+            var version = separator >= 0 ? middle[..separator] : middle;
+            var assetPlatform = separator >= 0 ? middle[(separator + 1)..] : "linux";
+            if (!string.Equals(assetPlatform, platform, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             namedAssets.Add(new AssetCandidate(asset, version));
         }
 
         if (namedAssets.Count == 0)
         {
             return ReleaseProviderResult.Failure(
-                $"No GitHub asset matching '{serviceId}_<version>_{arch}.zip' was found in release '{release.Tag}' for repository '{repositoryName}'. Available assets: {FormatAssetNames(availableNames)}");
+                $"No GitHub asset matching '{serviceId}_<version>_{platform}_{arch}.zip' was found in release '{release.Tag}' for repository '{repositoryName}'. Available assets: {FormatAssetNames(availableNames)}");
         }
 
         var matchingAssets = namedAssets.Where(candidate => MatchesAssetVersion(candidate.Version, releaseRef)).ToList();

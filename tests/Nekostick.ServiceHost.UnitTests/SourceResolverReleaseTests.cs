@@ -16,7 +16,7 @@ public sealed class SourceResolverReleaseTests
 {
     private const string ApiUrl = "https://api.github.com/repos/owner/repo/releases?per_page=100";
     private static string OfficialDownloadUrl =>
-        $"https://github.com/owner/repo/releases/download/v1.2.3/api_v1.2.3_{CurrentArch}.zip";
+        $"https://github.com/owner/repo/releases/download/v1.2.3/api_v1.2.3_{CurrentPlatform}_{CurrentArch}.zip";
 
     [Fact]
     public async Task Resolve_release_falls_through_a_failed_mirror_to_the_next_mirror()
@@ -275,7 +275,7 @@ public sealed class SourceResolverReleaseTests
             Assert.Equal("owner/repo@v1.2.3", result.Source.Spec);
             Assert.Equal("v1.2.3", result.Source.Tag);
             Assert.Equal("v1.2.3", result.Source.Version);
-            Assert.Equal($"api_v1.2.3_{CurrentArch}.zip", result.Source.AssetName);
+            Assert.Equal($"api_v1.2.3_{CurrentPlatform}_{CurrentArch}.zip", result.Source.AssetName);
             Assert.False(string.IsNullOrEmpty(result.Source.Sha256));
             if (!OperatingSystem.IsWindows())
             {
@@ -445,7 +445,7 @@ public sealed class SourceResolverReleaseTests
         var root = CreateTempDirectory();
         var apiRequestCount = 0;
         var firstUrl = OfficialDownloadUrl;
-        var secondUrl = $"https://github.com/owner/repo/releases/download/1.2.3/api_1.2.3_{CurrentArch}.zip";
+        var secondUrl = $"https://github.com/owner/repo/releases/download/1.2.3/api_1.2.3_{CurrentPlatform}_{CurrentArch}.zip";
         var zipRequests = new List<string>();
         try
         {
@@ -621,7 +621,7 @@ public sealed class SourceResolverReleaseTests
                 {
                     new
                     {
-                        name = $"api_{version ?? tag}_{CurrentArch}.zip",
+                        name = $"api_{version ?? tag}_{CurrentPlatform}_{CurrentArch}.zip",
                         browser_download_url = downloadUrl,
                         digest = digest
                     }
@@ -638,6 +638,34 @@ public sealed class SourceResolverReleaseTests
         Architecture.X86 => "x86",
         _ => "unsupported"
     };
+
+    private static string CurrentPlatform
+    {
+        get
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                return "windows";
+            }
+
+            if (OperatingSystem.IsLinux())
+            {
+                return "linux";
+            }
+
+            if (OperatingSystem.IsMacOS())
+            {
+                return "macos";
+            }
+
+            if (OperatingSystem.IsFreeBSD())
+            {
+                return "freebsd";
+            }
+
+            return "unsupported";
+        }
+    }
 
     private static byte[] CreateZip(params (string Name, string Content)[] entries)
     {

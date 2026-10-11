@@ -61,7 +61,7 @@ source:
 
 `sha256` 必须恰好包含 64 个十六进制字符, 大小写均可. 若省略 `strictSources`, 其默认值为 `false`; 未声明摘要时来源仍可通过配置校验, 但会产生非致命 warning. 设置 `strictSources: true` 后, `url`、`path`、`release` 都必须显式声明 `sha256`, 缺失会使配置校验失败. URL 摘要校验下载文件, path 摘要校验本地文件, release 摘要校验 ZIP asset.
 
-`source.sha256` 在一份 YAML 中只有一个固定值; release 会按本节点架构选择 ZIP, 并校验该 ZIP 的摘要. 多架构节点共享同一 YAML 时, 若各架构 ZIP 摘要不同, 单个显式 `sha256` 无法同时匹配; `strictSources: true` 仍要求显式摘要.
+`source.sha256` 在一份 YAML 中只有一个固定值; release 会按本节点平台与架构选择 ZIP, 并校验该 ZIP 的摘要. 多架构节点共享同一 YAML 时, 若各架构 ZIP 摘要不同, 单个显式 `sha256` 无法同时匹配; `strictSources: true` 仍要求显式摘要.
 
 对于 GitHub release, 显式 `source.sha256` 优先于 API metadata 中的 asset digest. 未声明时, 若 GitHub 提供可识别的 `sha256:<64 位十六进制>` digest, svchost 会用它校验下载; 两者都没有时, 首次下载没有上游完整性校验, 但 lock 会记录实际下载摘要, 同一 release identity 的后续重下载会校验已有 lock SHA.
 
@@ -69,7 +69,8 @@ source:
 
 `source.release` 使用 `{provider}:{spec}` 格式. 当前内置 provider key 是 `github`, 其 spec 格式为 `owner/repo@ref`, 例如 `github:owner/repo@v1.2.3`. 未注册的 provider 会在同步解析来源时失败. GitHub provider 还要求恰好一个 `/`, owner/repo 非空且只含 ASCII 字母、数字、`_`、`.`、`-` (不允许 `.` 或 `..`), 并且 `ref` 非空; 格式错误会在同步时失败.
 
-- asset 名必须符合 `{serviceId}_{version}_{arch}.zip`; `serviceId` 是 `services` 中的服务 key, `version` 不能为空. `serviceId` 必须匹配 `^[a-z0-9][a-z0-9-]{0,62}$`; asset 名的服务名前缀和架构/扩展名后缀按大小写敏感方式匹配.
+- asset 名必须符合 `{serviceId}_{version}_{platform}_{arch}.zip`; `serviceId` 是 `services` 中的服务 key, `version` 不能为空. `serviceId` 必须匹配 `^[a-z0-9][a-z0-9-]{0,62}$`; asset 名的服务名前缀、`arch` 与 `.zip` 扩展名后缀按大小写敏感方式匹配. `platform` 按大小写不敏感方式匹配. 旧的 3 段式 `{serviceId}_{version}_{arch}.zip` 仍然接受, 其 `platform` 视为 `linux`, 因此只在 Linux 宿主机上匹配.
+- `platform` 按 svchost 宿主操作系统选择: `windows`、`linux`、`macos` 或 `freebsd`. 无法识别宿主操作系统的节点无法解析 release asset.
 - `arch` 按 svchost 所在进程架构选择: `x64`、`arm64`、`arm` 或 `x86`. 其他进程架构无法解析 release asset.
 - `ref` 按以下顺序分类: 7–40 位十六进制字符串优先作为 commit 前缀; 否则尝试 SemVer; 都不匹配时作为精确 tag. SemVer 解析接受小写 `v` 前缀.
 - commit 前缀按 GitHub release 的 `target_commitish` 前缀匹配, asset 的 `version` 段也必须以该前缀开头; 发布此类 release 时应将 `target_commitish` 设为目标 commit SHA, 而不是通常不匹配的分支名.

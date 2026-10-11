@@ -35,10 +35,16 @@ public sealed partial class SourceResolver
                 $"The current process architecture '{unsupportedArchitecture}' is not supported for release assets.");
         }
 
+        if (!TryGetReleasePlatform(out var platform, out var unsupportedPlatform))
+        {
+            return SourceResolutionResult.Failure(
+                $"The current process platform '{unsupportedPlatform}' is not supported for release assets.");
+        }
+
         ReleaseProviderResult providerResult;
         try
         {
-            providerResult = await provider.ResolveAsync(releaseSource, serviceName, arch, cancellationToken)
+            providerResult = await provider.ResolveAsync(releaseSource, serviceName, arch, platform, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
@@ -467,6 +473,33 @@ public sealed partial class SourceResolver
         };
         unsupportedArchitecture = architecture.ToString();
         return arch.Length > 0;
+    }
+
+    private static bool TryGetReleasePlatform(out string platform, out string unsupportedPlatform)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            platform = "windows";
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            platform = "linux";
+        }
+        else if (OperatingSystem.IsMacOS())
+        {
+            platform = "macos";
+        }
+        else if (OperatingSystem.IsFreeBSD())
+        {
+            platform = "freebsd";
+        }
+        else
+        {
+            platform = string.Empty;
+        }
+
+        unsupportedPlatform = RuntimeInformation.OSDescription;
+        return platform.Length > 0;
     }
 
     private sealed record ReleaseDownload(string Path, string Sha256, long Size);

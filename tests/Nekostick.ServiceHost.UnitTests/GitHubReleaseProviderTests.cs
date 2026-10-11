@@ -16,8 +16,8 @@ public sealed class GitHubReleaseProviderTests
     {
         var digest = new string('A', 64);
         var json = CreateReleases(
-            new TestRelease("v1.2.3", "main", [new TestAsset("api_draft_x64.zip", OfficialDownloadUrl)], Draft: true),
-            new TestRelease("v1.2.3", "main", [new TestAsset("api_v1.2.3_x64.zip", OfficialDownloadUrl, $"sha256:{digest}")]));
+            new TestRelease("v1.2.3", "main", [new TestAsset("api_draft_linux_x64.zip", OfficialDownloadUrl)], Draft: true),
+            new TestRelease("v1.2.3", "main", [new TestAsset("api_v1.2.3_linux_x64.zip", OfficialDownloadUrl, $"sha256:{digest}")]));
 
         var result = await ResolveAsync("1.2.3", json);
 
@@ -32,7 +32,7 @@ public sealed class GitHubReleaseProviderTests
     public async Task Resolve_commit_hash_matches_target_commitish_prefix()
     {
         var json = CreateReleases(
-            new TestRelease("nightly", "abcdef1234567890", [new TestAsset("api_abcdef123_x64.zip", OfficialDownloadUrl)]));
+            new TestRelease("nightly", "abcdef1234567890", [new TestAsset("api_abcdef123_linux_x64.zip", OfficialDownloadUrl)]));
 
         var result = await ResolveAsync("abcdef1", json);
 
@@ -45,7 +45,7 @@ public sealed class GitHubReleaseProviderTests
     public async Task Resolve_commit_asset_version_mismatch_is_rejected()
     {
         var json = CreateReleases(
-            new TestRelease("nightly", "abcdef1234567890", [new TestAsset("api_abcdef2_x64.zip", OfficialDownloadUrl)]));
+            new TestRelease("nightly", "abcdef1234567890", [new TestAsset("api_abcdef2_linux_x64.zip", OfficialDownloadUrl)]));
 
         var result = await ResolveAsync("abcdef1", json);
 
@@ -69,6 +69,7 @@ public sealed class GitHubReleaseProviderTests
             new ReleaseSource("github", spec, reference),
             "api",
             "x64",
+            "linux",
             CancellationToken.None);
 
         Assert.False(result.Succeeded);
@@ -79,7 +80,7 @@ public sealed class GitHubReleaseProviderTests
     public async Task Resolve_tag_requires_exact_tag_and_exact_asset_version_without_warning()
     {
         var json = CreateReleases(
-            new TestRelease("stable", "main", [new TestAsset("api_stable_x64.zip", OfficialDownloadUrl)]));
+            new TestRelease("stable", "main", [new TestAsset("api_stable_linux_x64.zip", OfficialDownloadUrl)]));
 
         var result = await ResolveAsync("stable", json);
 
@@ -92,7 +93,7 @@ public sealed class GitHubReleaseProviderTests
     public async Task Resolve_tag_asset_version_mismatch_succeeds_with_warning()
     {
         var json = CreateReleases(
-            new TestRelease("stable", "main", [new TestAsset("api_1.2.0_x64.zip", OfficialDownloadUrl)]));
+            new TestRelease("stable", "main", [new TestAsset("api_1.2.0_linux_x64.zip", OfficialDownloadUrl)]));
 
         var result = await ResolveAsync("stable", json);
 
@@ -105,7 +106,7 @@ public sealed class GitHubReleaseProviderTests
     public async Task Resolve_semver_asset_version_mismatch_is_rejected()
     {
         var json = CreateReleases(
-            new TestRelease("v1.2.3", "main", [new TestAsset("api_1.2.4_x64.zip", OfficialDownloadUrl)]));
+            new TestRelease("v1.2.3", "main", [new TestAsset("api_1.2.4_linux_x64.zip", OfficialDownloadUrl)]));
 
         var result = await ResolveAsync("1.2.3", json);
 
@@ -121,15 +122,15 @@ public sealed class GitHubReleaseProviderTests
                 "v1.2.3",
                 "main",
                 [
-                    new TestAsset("worker_v1.2.3_x64.zip", "https://example.com/worker.zip"),
-                    new TestAsset("api_v1.2.3_arm64.zip", "https://example.com/arm64.zip"),
-                    new TestAsset("api_v1.2.3_x64.zip", OfficialDownloadUrl)
+                    new TestAsset("worker_v1.2.3_linux_x64.zip", "https://example.com/worker.zip"),
+                    new TestAsset("api_v1.2.3_linux_arm64.zip", "https://example.com/arm64.zip"),
+                    new TestAsset("api_v1.2.3_linux_x64.zip", OfficialDownloadUrl)
                 ]));
 
         var result = await ResolveAsync("v1.2.3", json, serviceId: "api", arch: "x64");
 
         Assert.True(result.Succeeded);
-        Assert.Equal("api_v1.2.3_x64.zip", result.Asset!.AssetName);
+        Assert.Equal("api_v1.2.3_linux_x64.zip", result.Asset!.AssetName);
         Assert.Equal(OfficialDownloadUrl, result.Asset.DownloadUrl);
     }
 
@@ -148,16 +149,65 @@ public sealed class GitHubReleaseProviderTests
             CreateReleases(new TestRelease(
                 "v1.2.3",
                 "main",
-                [new TestAsset("worker_v1.2.3_x64.zip", "https://example.com/worker.zip")])));
+                [new TestAsset("worker_v1.2.3_linux_x64.zip", "https://example.com/worker.zip")])));
         Assert.False(noAsset.Succeeded);
-        Assert.Contains("worker_v1.2.3_x64.zip", noAsset.Error, StringComparison.Ordinal);
+        Assert.Contains("worker_v1.2.3_linux_x64.zip", noAsset.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Resolve_matches_asset_platform_case_insensitively()
+    {
+        var json = CreateReleases(
+            new TestRelease("v1.2.3", "main", [new TestAsset("api_v1.2.3_LINUX_x64.zip", OfficialDownloadUrl)]));
+
+        var result = await ResolveAsync("v1.2.3", json, platform: "linux");
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("api_v1.2.3_LINUX_x64.zip", result.Asset!.AssetName);
+    }
+
+    [Fact]
+    public async Task Resolve_legacy_three_segment_asset_name_matches_linux_platform()
+    {
+        var json = CreateReleases(
+            new TestRelease("v1.2.3", "main", [new TestAsset("api_v1.2.3_x64.zip", OfficialDownloadUrl)]));
+
+        var result = await ResolveAsync("v1.2.3", json, platform: "linux");
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("api_v1.2.3_x64.zip", result.Asset!.AssetName);
+    }
+
+    [Fact]
+    public async Task Resolve_legacy_three_segment_asset_name_does_not_match_windows_platform()
+    {
+        var json = CreateReleases(
+            new TestRelease("v1.2.3", "main", [new TestAsset("api_v1.2.3_x64.zip", OfficialDownloadUrl)]));
+
+        var result = await ResolveAsync("v1.2.3", json, platform: "windows");
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("api_v1.2.3_x64.zip", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Resolve_four_segment_asset_name_does_not_match_other_platform()
+    {
+        var json = CreateReleases(
+            new TestRelease("v1.2.3", "main", [new TestAsset("api_v1.2.3_windows_x64.zip", OfficialDownloadUrl)]));
+
+        var result = await ResolveAsync("v1.2.3", json, platform: "linux");
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("api_v1.2.3_windows_x64.zip", result.Error, StringComparison.Ordinal);
     }
 
     private static async Task<ReleaseProviderResult> ResolveAsync(
         string reference,
         string releasesJson,
         string serviceId = "api",
-        string arch = "x64")
+        string arch = "x64",
+        string platform = "linux")
     {
         using var client = new HttpClient(new StubHandler((request, _) =>
         {
@@ -171,7 +221,7 @@ public sealed class GitHubReleaseProviderTests
         }));
         var provider = new GitHubReleaseProvider(client);
         var source = new ReleaseSource("github", $"owner/repo@{reference}", reference);
-        return await provider.ResolveAsync(source, serviceId, arch, CancellationToken.None);
+        return await provider.ResolveAsync(source, serviceId, arch, platform, CancellationToken.None);
     }
 
     private static string CreateReleases(params TestRelease[] releases) =>

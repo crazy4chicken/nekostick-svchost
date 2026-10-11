@@ -5,18 +5,20 @@
 ## 发布流程
 
 1. 推荐使用 SemVer tag, 例如 `v1.2.3`. ref 解析接受小写 `v` 前缀. 注意, 7–40 位十六进制字符串会优先被识别为 commit 前缀, 不会作为同名 tag 处理.
-2. CI 按目标节点的进程架构构建产物, 每个 ZIP asset 按 `{serviceId}_{version}_{arch}.zip` 命名. `serviceId` 必须与用户 Compose 中的 `services` key 完全一致, 且匹配 `^[a-z0-9][a-z0-9-]{0,62}$`; asset 名中的服务名前缀和架构/扩展名后缀按大小写敏感方式匹配. `arch` 为 `x64`、`arm64`、`arm` 或 `x86`.
+2. CI 按目标节点的操作系统与进程架构构建产物, 每个 ZIP asset 按 `{serviceId}_{version}_{platform}_{arch}.zip` 命名. `serviceId` 必须与用户 Compose 中的 `services` key 完全一致, 且匹配 `^[a-z0-9][a-z0-9-]{0,62}$`; asset 名中的服务名前缀、`arch` 与 `.zip` 扩展名后缀按大小写敏感方式匹配. `platform` 为 `windows`、`linux`、`macos` 或 `freebsd`, 必须与本节点操作系统一致, 且按大小写不敏感方式匹配; `arch` 为 `x64`、`arm64`、`arm` 或 `x86`. 无法识别宿主操作系统的节点无法解析 release asset.
 
-   例如服务 key 为 `my-service`, tag 与 asset version 均为 `v1.2.3` 时, 可发布:
+   例如服务 key 为 `my-service`, tag 与 asset version 均为 `v1.2.3` 时, 可按平台各发布一份:
 
    ```text
-   my-service_v1.2.3_x64.zip
-   my-service_v1.2.3_arm64.zip
-   my-service_v1.2.3_arm.zip
-   my-service_v1.2.3_x86.zip
+   my-service_v1.2.3_linux_x64.zip
+   my-service_v1.2.3_linux_arm64.zip
+   my-service_v1.2.3_windows_x64.zip
+   my-service_v1.2.3_macos_arm64.zip
    ```
 
-3. 让 asset 的 `version` 段符合 ref 分类规则. SemVer ref 要求 release tag 和至少一个匹配服务/架构的 asset version 与 ref 的 SemVer identity 相等; build metadata 不参与比较, 没有匹配 asset 时拒绝. Commit ref 要求 GitHub release 的 `target_commitish` 以该前缀开头, 且 asset version 也以该前缀开头; 发布时应将 `target_commitish` 设为目标 commit 的完整 SHA, 而不是通常不匹配的分支名. 其他 ref 按精确 tag 匹配 release; asset version 不与 tag 完全相同只产生 warning, 不会因此拒绝.
+   旧的 3 段式 `{serviceId}_{version}_{arch}.zip` 仍然接受, 其 `platform` 视为 `linux`, 因此只在 Linux 宿主机上匹配; 新发布建议一律使用 4 段式命名.
+
+3. 让 asset 的 `version` 段符合 ref 分类规则. SemVer ref 要求 release tag 和至少一个匹配服务/平台/架构的 asset version 与 ref 的 SemVer identity 相等; build metadata 不参与比较, 没有匹配 asset 时拒绝. Commit ref 要求 GitHub release 的 `target_commitish` 以该前缀开头, 且 asset version 也以该前缀开头; 发布时应将 `target_commitish` 设为目标 commit 的完整 SHA, 而不是通常不匹配的分支名. 其他 ref 按精确 tag 匹配 release; asset version 不与 tag 完全相同只产生 warning, 不会因此拒绝.
 4. 每个 ZIP 会整体解压. 入口可执行文件必须直接位于 ZIP 解压根目录, 文件名为 Compose service key (`serviceId`). Windows 也接受 `{serviceId}.exe`; POSIX 使用无扩展名的 `{serviceId}`. POSIX 下入口内容必须是目标平台可执行程序; svchost 安装时只把入口权限设为 `0755` (`rwxr-xr-x`), 不要求 ZIP 保存其 Unix executable mode, 也不会恢复其他文件的 Unix 权限位.
    ZIP 内根路径、越出解压目录的路径会导致安装失败; 指向同一输出路径的重复文件条目也会失败. 服务进程 CWD 是当前 `serviceScope` 的 service root, 不是 ZIP 解压目录: 未设置或 `global` 时为 `<data>/svchost/global`, `document` 时为 `<data>/svchost/<configName>`. 随包资源应通过入口程序自身路径定位, 不要依赖 CWD; 详见 [Compose 配置参考](compose.md).
 5. 计算每个 ZIP asset 的 SHA-256, 在用户配置中建议声明 `source.sha256`. 摘要针对 ZIP 文件本身, 不是 ZIP 内的入口文件. 同一份 Compose 中 `source.sha256` 是固定值; 若多架构 ZIP 摘要不同, 该值不能同时匹配所有架构节点. `strictSources: true` 会要求每个来源都显式声明摘要, 因此只在所有目标节点都能使用相同摘要时启用.
@@ -32,7 +34,7 @@ GitHub provider 按以下顺序分类 ref: 7–40 位十六进制 commit 前缀,
 
 | 用户填写的 ref | release 选择规则 | asset `version` 规则 | 不匹配结果 |
 | --- | --- | --- | --- |
-| `v1.2.3` 或 `1.2.3` | release tag 必须解析为相同 SemVer identity. | 至少一个匹配服务与架构的 asset version 必须解析为相同 SemVer identity. | 没有匹配 release 或 asset 时拒绝. |
+| `v1.2.3` 或 `1.2.3` | release tag 必须解析为相同 SemVer identity. | 至少一个匹配服务、平台与架构的 asset version 必须解析为相同 SemVer identity. | 没有匹配 release 或 asset 时拒绝. |
 | 7–40 位十六进制前缀 | `target_commitish` 必须以该前缀开头; 发布时将其设为目标 commit 的完整 SHA. | asset version 必须以该前缀开头. | release 或 asset 不匹配时拒绝. |
 | 其他非空 ref | release tag 必须与 ref 完全相同. | 不要求相同. | asset version 与 release tag 字符串不同时只产生 warning. |
 
