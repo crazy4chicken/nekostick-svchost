@@ -1,5 +1,7 @@
 using System.IO.Compression;
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using Nekostick.ServiceHost.Compose;
 using Nekostick.ServiceHost.Settings;
@@ -9,6 +11,10 @@ namespace Nekostick.ServiceHost.Sync;
 
 public sealed partial class SourceResolver
 {
+    private readonly object _gitHubAppAuthSync = new();
+    private GitHubAppAuth? _gitHubAppAuth;
+    private GitHubAppSettings? _gitHubAppAuthSettings;
+
     private async ValueTask<SourceResolutionResult> ResolveReleaseAsync(
         ComposeSource source,
         string serviceName,
@@ -41,10 +47,13 @@ public sealed partial class SourceResolver
                 $"The current process platform '{unsupportedPlatform}' is not supported for release assets.");
         }
 
+        var appAuth = string.Equals(releaseSource.ProviderKey, "github", StringComparison.Ordinal)
+            ? GetGitHubAppAuth(releaseProviderSettings)
+            : null;
         ReleaseProviderResult providerResult;
         try
         {
-            providerResult = await provider.ResolveAsync(releaseSource, serviceName, arch, platform, cancellationToken)
+            providerResult = await provider.ResolveAsync(releaseSource, serviceName, arch, platform, appAuth, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
@@ -96,25 +105,60 @@ public sealed partial class SourceResolver
             : null;
         var expectedAssetDigest = source.Sha256 ?? asset.Sha256;
         var candidateUrls = new List<string>();
-        if (releaseProviderSettings is not null &&
-            releaseProviderSettings.TryGetValue(releaseSource.ProviderKey, out var providerSettings) &&
-            providerSettings?.Mirrors is { } mirrors)
+        string? bearerToken = null;
+        if (asset.AssetApiUrl is { } assetApiUrl && appAuth is not null)
         {
-            foreach (var mirror in mirrors)
+            // Authenticated API download: mirrors are bypassed so the token never leaves GitHub.
+            if (!TryParseRepositoryCoordinates(releaseSource.Spec, out var owner, out var repository))
             {
-                if (mirror is not null)
+                return SourceResolutionResult.Failure(
+                    $"The release source spec '{releaseSource.Spec}' does not contain repository coordinates.",
+                    providerResult.Warnings);
+            }
+
+            try
+            {
+                bearerToken = await appAuth.GetInstallationTokenAsync(owner, repository, cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException exception)
+            {
+                return SourceResolutionResult.Failure(
+                    $"GitHub App authentication for '{releaseSource.Spec}' failed: {exception.Message}",
+                    providerResult.Warnings);
+            }
+            catch (InvalidOperationException exception)
+            {
+                return SourceResolutionResult.Failure(
+                    $"GitHub App authentication for '{releaseSource.Spec}' failed: {exception.Message}",
+                    providerResult.Warnings);
+            }
+
+            candidateUrls.Add(assetApiUrl);
+        }
+        else
+        {
+            if (releaseProviderSettings is not null &&
+                releaseProviderSettings.TryGetValue(releaseSource.ProviderKey, out var providerSettings) &&
+                providerSettings?.Mirrors is { } mirrors)
+            {
+                foreach (var mirror in mirrors)
                 {
-                    candidateUrls.Add(string.Concat(mirror, asset.DownloadUrl));
+                    if (mirror is not null)
+                    {
+                        candidateUrls.Add(string.Concat(mirror, asset.DownloadUrl));
+                    }
                 }
             }
+
+            candidateUrls.Add(asset.DownloadUrl);
         }
 
-        candidateUrls.Add(asset.DownloadUrl);
         var downloadResult = await DownloadReleaseAssetAsync(
                 candidateUrls,
                 expectedLockedDigest,
                 expectedAssetDigest,
                 temporaryDirectory,
+                bearerToken,
                 cancellationToken)
             .ConfigureAwait(false);
         var download = downloadResult.Download;
@@ -187,11 +231,54 @@ public sealed partial class SourceResolver
         }
     }
 
+    private GitHubAppAuth? GetGitHubAppAuth(IReadOnlyDictionary<string, ReleaseProviderSettings>? releaseProviderSettings)
+    {
+        var app = releaseProviderSettings is not null &&
+                  releaseProviderSettings.TryGetValue("github", out var providerSettings)
+            ? providerSettings?.App
+            : null;
+        if (app is null || app.PrivateKey is null)
+        {
+            return null;
+        }
+
+        lock (_gitHubAppAuthSync)
+        {
+            if (_gitHubAppAuth is not null && Equals(_gitHubAppAuthSettings, app))
+            {
+                return _gitHubAppAuth;
+            }
+
+            _gitHubAppAuth?.Dispose();
+            _gitHubAppAuth = new GitHubAppAuth(_httpClient, app);
+            _gitHubAppAuthSettings = app;
+            return _gitHubAppAuth;
+        }
+    }
+
+    private static bool TryParseRepositoryCoordinates(string spec, out string owner, out string repository)
+    {
+        owner = string.Empty;
+        repository = string.Empty;
+        var atIndex = spec.IndexOf('@');
+        var path = atIndex >= 0 ? spec[..atIndex] : spec;
+        var slashIndex = path.IndexOf('/');
+        if (slashIndex <= 0 || slashIndex == path.Length - 1)
+        {
+            return false;
+        }
+
+        owner = path[..slashIndex];
+        repository = path[(slashIndex + 1)..];
+        return true;
+    }
+
     private async ValueTask<ReleaseDownloadResult> DownloadReleaseAssetAsync(
         IReadOnlyList<string> candidateUrls,
         string? expectedLockedDigest,
         string? expectedAssetDigest,
         string temporaryDirectory,
+        string? bearerToken,
         CancellationToken cancellationToken)
     {
         var failures = new List<string>(candidateUrls.Count);
@@ -203,6 +290,7 @@ public sealed partial class SourceResolver
                     expectedLockedDigest,
                     expectedAssetDigest,
                     temporaryDirectory,
+                    bearerToken,
                     cancellationToken)
                 .ConfigureAwait(false);
             if (result.Download is not null)
@@ -223,6 +311,7 @@ public sealed partial class SourceResolver
         string? expectedLockedDigest,
         string? expectedAssetDigest,
         string temporaryDirectory,
+        string? bearerToken,
         CancellationToken cancellationToken)
     {
         if (!Uri.TryCreate(candidateUrl, UriKind.Absolute, out var uri))
@@ -240,13 +329,36 @@ public sealed partial class SourceResolver
             {
                 using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeoutCancellation.CancelAfter(_timeout);
-                using var response = await _httpClient.GetAsync(
-                        uri,
-                        HttpCompletionOption.ResponseHeadersRead,
-                        timeoutCancellation.Token)
-                    .ConfigureAwait(false);
+                using var request = bearerToken is null ? null : new HttpRequestMessage(HttpMethod.Get, uri);
+                if (request is not null)
+                {
+                    // The handler strips Authorization on cross-host redirects, so the token
+                    // never reaches the signed download target GitHub redirects to.
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+                    request.Headers.Accept.ParseAdd("application/octet-stream");
+                }
+
+                using var response = request is null
+                    ? await _httpClient.GetAsync(
+                            uri,
+                            HttpCompletionOption.ResponseHeadersRead,
+                            timeoutCancellation.Token)
+                        .ConfigureAwait(false)
+                    : await _httpClient.SendAsync(
+                            request,
+                            HttpCompletionOption.ResponseHeadersRead,
+                            timeoutCancellation.Token)
+                        .ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
+                    if (bearerToken is not null &&
+                        response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                    {
+                        return new ReleaseDownloadResult(
+                            null,
+                            $"The candidate returned HTTP {(int)response.StatusCode} ({response.StatusCode}); the GitHub App credentials or permissions were rejected.");
+                    }
+
                     throw new HttpRequestException(
                         $"The candidate returned HTTP {(int)response.StatusCode} ({response.StatusCode}).");
                 }

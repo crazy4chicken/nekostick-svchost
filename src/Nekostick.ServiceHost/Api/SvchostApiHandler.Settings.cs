@@ -11,11 +11,53 @@ public sealed partial class SvchostApiHandler
         {
             ["releaseProviders"] = new SettingsGroupDefinition<Dictionary<string, ReleaseProviderSettings>>(
                 "releaseProviders",
-                settings => settings.ReleaseProviders,
+                settings => RedactReleaseProviders(settings.ReleaseProviders),
                 () => new Dictionary<string, ReleaseProviderSettings>(StringComparer.Ordinal),
-                (settings, releaseProviders) => settings.ReleaseProviders = releaseProviders,
+                ApplyReleaseProviders,
                 ValidateReleaseProviders)
         };
+
+    private static Dictionary<string, ReleaseProviderSettings>? RedactReleaseProviders(
+        Dictionary<string, ReleaseProviderSettings>? releaseProviders)
+    {
+        if (releaseProviders is null)
+        {
+            return null;
+        }
+
+        var redacted = new Dictionary<string, ReleaseProviderSettings>(releaseProviders.Count, StringComparer.Ordinal);
+        foreach (var (key, provider) in releaseProviders)
+        {
+            redacted[key] = new ReleaseProviderSettings
+            {
+                Mirrors = provider.Mirrors,
+                App = provider.App is { } app && app.PrivateKey is not null
+                    ? app with { PrivateKey = GitHubAppSettings.RedactedPrivateKey }
+                    : provider.App
+            };
+        }
+
+        return redacted;
+    }
+
+    private static void ApplyReleaseProviders(
+        SvchostSettings settings,
+        Dictionary<string, ReleaseProviderSettings> releaseProviders)
+    {
+        foreach (var (key, provider) in releaseProviders)
+        {
+            if (provider.App?.PrivateKey == GitHubAppSettings.RedactedPrivateKey)
+            {
+                var stored = settings.ReleaseProviders is not null &&
+                             settings.ReleaseProviders.TryGetValue(key, out var existing)
+                    ? existing?.App?.PrivateKey
+                    : null;
+                provider.App = provider.App with { PrivateKey = stored };
+            }
+        }
+
+        settings.ReleaseProviders = releaseProviders;
+    }
 
     private async ValueTask<ExtensionStreamingResponse> HandleSettingsAsync(
         string method,
@@ -147,6 +189,18 @@ public sealed partial class SvchostApiHandler
                     string.IsNullOrEmpty(uri.Host))
                 {
                     return $"releaseProviders.{providerKey}.mirrors[{index}] must be an absolute HTTP or HTTPS URL.";
+                }
+            }
+
+            if (provider.App is { } app)
+            {
+                var appError = SvchostSettings.ValidateGitHubAppSettings(
+                    $"releaseProviders.{providerKey}.app",
+                    app,
+                    allowRedacted: true);
+                if (appError is not null)
+                {
+                    return appError;
                 }
             }
         }

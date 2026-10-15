@@ -12,5 +12,6 @@ public interface IReleaseProvider
         string serviceId,
         string arch,
         string platform,
+        IReleaseProviderAuth? auth,
         CancellationToken cancellationToken);
 }

@@ -6,7 +6,8 @@ public sealed record ResolvedReleaseAsset(
     string Version,
     string AssetName,
     string DownloadUrl,
-    string? Sha256);
+    string? Sha256,
+    string? AssetApiUrl = null);
 
 /// <summary>Contains a provider resolution result and any non-fatal warnings.</summary>
 public sealed record ReleaseProviderResult(

@@ -120,6 +120,115 @@ public sealed class SourceResolverReleaseTests
     }
 
     [Fact]
+    public async Task Resolve_release_with_app_auth_downloads_through_the_api_url_and_skips_mirrors()
+    {
+        var root = CreateTempDirectory();
+        var requests = new List<HttpRequestMessage>();
+        var zip = CreateZip(("api", "private-binary"));
+        try
+        {
+            using var client = new HttpClient(new StubHandler((request, _) =>
+            {
+                requests.Add(CloneRequest(request));
+                var url = request.RequestUri!.AbsoluteUri;
+                if (url == "https://api.github.com/app/installations/456/access_tokens")
+                {
+                    return Task.FromResult(JsonResponse(JsonSerializer.Serialize(new
+                    {
+                        token = "installation-token",
+                        expires_at = DateTimeOffset.UtcNow.AddHours(1).ToString("O")
+                    })));
+                }
+
+                if (url == ApiUrl)
+                {
+                    return Task.FromResult(JsonResponse(CreateReleaseJson(assetId: 777)));
+                }
+
+                if (url == "https://api.github.com/repos/owner/repo/releases/assets/777")
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(zip)
+                    });
+                }
+
+                return Task.FromResult(Response(HttpStatusCode.NotFound));
+            }));
+            var resolver = new SourceResolver(client, retryCount: 0);
+
+            var result = await ResolveAsync(
+                resolver,
+                Path.Combine(root, "data"),
+                CreateSource(),
+                null,
+                CreateAppProviderSettings("https://mirror-one/"));
+
+            Assert.True(result.Succeeded, result.Error);
+            Assert.Equal("private-binary", await File.ReadAllTextAsync(result.ArtifactPath!));
+            Assert.DoesNotContain(requests, request =>
+                request.RequestUri!.AbsoluteUri.StartsWith("https://mirror-one/", StringComparison.Ordinal));
+            var metadataRequest = Assert.Single(requests, request => request.RequestUri!.AbsoluteUri == ApiUrl);
+            Assert.Equal("Bearer installation-token", metadataRequest.Headers.Authorization?.ToString());
+            var assetRequest = Assert.Single(requests,
+                request => request.RequestUri!.AbsoluteUri == "https://api.github.com/repos/owner/repo/releases/assets/777");
+            Assert.Equal("Bearer installation-token", assetRequest.Headers.Authorization?.ToString());
+            Assert.Contains(assetRequest.Headers.Accept, value => value.MediaType == "application/octet-stream");
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+    [Fact]
+    public async Task Resolve_release_with_app_auth_fails_fast_when_credentials_are_rejected()
+    {
+        var root = CreateTempDirectory();
+        var assetRequests = 0;
+        try
+        {
+            using var client = new HttpClient(new StubHandler((request, _) =>
+            {
+                var url = request.RequestUri!.AbsoluteUri;
+                if (url == "https://api.github.com/app/installations/456/access_tokens")
+                {
+                    return Task.FromResult(JsonResponse(JsonSerializer.Serialize(new
+                    {
+                        token = "installation-token",
+                        expires_at = DateTimeOffset.UtcNow.AddHours(1).ToString("O")
+                    })));
+                }
+
+                if (url == ApiUrl)
+                {
+                    return Task.FromResult(JsonResponse(CreateReleaseJson(assetId: 777)));
+                }
+
+                assetRequests++;
+                return Task.FromResult(Response(HttpStatusCode.Unauthorized));
+            }));
+            var resolver = new SourceResolver(client, retryCount: 2);
+
+            var result = await ResolveAsync(
+                resolver,
+                Path.Combine(root, "data"),
+                CreateSource(),
+                null,
+                CreateAppProviderSettings());
+
+            Assert.False(result.Succeeded);
+            Assert.Contains("credentials or permissions were rejected", result.Error, StringComparison.Ordinal);
+            Assert.Equal(1, assetRequests);
+        }
+        finally
+        {
+            DeleteTempDirectory(root);
+        }
+    }
+
+
+    [Fact]
     public async Task Resolve_release_uses_the_next_mirror_after_a_sha256_mismatch()
     {
         var root = CreateTempDirectory();
@@ -581,6 +690,36 @@ public sealed class SourceResolverReleaseTests
             ["github"] = new() { Mirrors = mirrors.ToList() }
         };
 
+    private static IReadOnlyDictionary<string, ReleaseProviderSettings> CreateAppProviderSettings(params string[] mirrors)
+    {
+        using var rsa = RSA.Create(2048);
+        return new Dictionary<string, ReleaseProviderSettings>(StringComparer.Ordinal)
+        {
+            ["github"] = new()
+            {
+                Mirrors = mirrors.ToList(),
+                App = new GitHubAppSettings
+                {
+                    AppId = 123456,
+                    InstallationId = 456,
+                    PrivateKey = rsa.ExportPkcs8PrivateKeyPem()
+                }
+            }
+        };
+    }
+
+    private static HttpRequestMessage CloneRequest(HttpRequestMessage request)
+    {
+        var clone = new HttpRequestMessage(request.Method, request.RequestUri);
+        if (request.Headers.Authorization is not null)
+        {
+            clone.Headers.TryAddWithoutValidation("Authorization", request.Headers.Authorization.ToString());
+        }
+
+        clone.Headers.TryAddWithoutValidation("Accept", request.Headers.Accept.ToString());
+        return clone;
+    }
+
     private static HttpClient CreateSingleAssetClient(byte[] zip)
     {
         return new HttpClient(new StubHandler((request, _) =>
@@ -606,7 +745,8 @@ public sealed class SourceResolverReleaseTests
         string tag = "v1.2.3",
         string? downloadUrl = null,
         string? version = null,
-        string? digest = null)
+        string? digest = null,
+        long? assetId = null)
     {
         downloadUrl ??= OfficialDownloadUrl;
         return JsonSerializer.Serialize(new[]
@@ -621,6 +761,7 @@ public sealed class SourceResolverReleaseTests
                 {
                     new
                     {
+                        id = assetId,
                         name = $"api_{version ?? tag}_{CurrentPlatform}_{CurrentArch}.zip",
                         browser_download_url = downloadUrl,
                         digest = digest

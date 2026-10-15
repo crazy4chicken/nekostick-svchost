@@ -70,6 +70,7 @@ public sealed class GitHubReleaseProviderTests
             "api",
             "x64",
             "linux",
+            null,
             CancellationToken.None);
 
         Assert.False(result.Succeeded);
@@ -100,6 +101,73 @@ public sealed class GitHubReleaseProviderTests
         Assert.True(result.Succeeded);
         Assert.Equal("1.2.0", result.Asset!.Version);
         Assert.Contains("does not exactly match", Assert.Single(result.Warnings), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Resolve_with_auth_sends_bearer_token_and_returns_asset_api_url()
+    {
+        var auth = new StubAuth("installation-token");
+        var json = CreateReleases(
+            new TestRelease("v1.2.3", "main", [new TestAsset("api_v1.2.3_linux_x64.zip", OfficialDownloadUrl, Id: 777)]));
+        using var client = new HttpClient(new StubHandler((request, _) =>
+        {
+            Assert.Equal("https://api.github.com/repos/owner/repo/releases?per_page=100", request.RequestUri!.ToString());
+            Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+            Assert.Equal("installation-token", request.Headers.Authorization?.Parameter);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        }));
+        var provider = new GitHubReleaseProvider(client);
+
+        var result = await provider.ResolveAsync(
+            new ReleaseSource("github", "owner/repo@v1.2.3", "v1.2.3"),
+            "api",
+            "x64",
+            "linux",
+            auth,
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded, result.Error);
+        Assert.Equal(
+            "https://api.github.com/repos/owner/repo/releases/assets/777",
+            result.Asset!.AssetApiUrl);
+        Assert.Equal("owner", auth.Owner);
+        Assert.Equal("repo", auth.Repository);
+    }
+
+    [Fact]
+    public async Task Resolve_without_auth_omits_asset_api_url()
+    {
+        var json = CreateReleases(
+            new TestRelease("v1.2.3", "main", [new TestAsset("api_v1.2.3_linux_x64.zip", OfficialDownloadUrl, Id: 777)]));
+
+        var result = await ResolveAsync("v1.2.3", json);
+
+        Assert.True(result.Succeeded, result.Error);
+        Assert.Null(result.Asset!.AssetApiUrl);
+    }
+
+    [Fact]
+    public async Task Resolve_with_auth_failure_returns_failure()
+    {
+        var auth = new StubAuth(new HttpRequestException("bad credentials"));
+        using var client = new HttpClient(new StubHandler((_, _) =>
+            throw new InvalidOperationException("The GitHub API must not be requested when authentication fails.")));
+        var provider = new GitHubReleaseProvider(client);
+
+        var result = await provider.ResolveAsync(
+            new ReleaseSource("github", "owner/repo@v1.2.3", "v1.2.3"),
+            "api",
+            "x64",
+            "linux",
+            auth,
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("authentication", result.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("bad credentials", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -221,7 +289,7 @@ public sealed class GitHubReleaseProviderTests
         }));
         var provider = new GitHubReleaseProvider(client);
         var source = new ReleaseSource("github", $"owner/repo@{reference}", reference);
-        return await provider.ResolveAsync(source, serviceId, arch, platform, CancellationToken.None);
+        return await provider.ResolveAsync(source, serviceId, arch, platform, null, CancellationToken.None);
     }
 
     private static string CreateReleases(params TestRelease[] releases) =>
@@ -233,6 +301,7 @@ public sealed class GitHubReleaseProviderTests
             prerelease = true,
             assets = release.Assets.Select(asset => new
             {
+                id = asset.Id,
                 name = asset.Name,
                 browser_download_url = asset.DownloadUrl,
                 digest = asset.Digest
@@ -241,7 +310,7 @@ public sealed class GitHubReleaseProviderTests
 
     private sealed record TestRelease(string Tag, string TargetCommitish, TestAsset[] Assets, bool Draft = false);
 
-    private sealed record TestAsset(string Name, string? DownloadUrl, string? Digest = null);
+    private sealed record TestAsset(string Name, string? DownloadUrl, string? Digest = null, long Id = 0);
 
     private sealed class StubHandler(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
@@ -249,5 +318,28 @@ public sealed class GitHubReleaseProviderTests
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) => send(request, cancellationToken);
+    }
+
+    private sealed class StubAuth : IReleaseProviderAuth
+    {
+        private readonly string? _token;
+        private readonly Exception? _failure;
+
+        public StubAuth(string token) => _token = token;
+
+        public StubAuth(Exception failure) => _failure = failure;
+
+        public string? Owner { get; private set; }
+
+        public string? Repository { get; private set; }
+
+        public Task<string> GetTokenAsync(string owner, string repository, CancellationToken cancellationToken)
+        {
+            Owner = owner;
+            Repository = repository;
+            return _failure is not null
+                ? Task.FromException<string>(_failure)
+                : Task.FromResult(_token!);
+        }
     }
 }

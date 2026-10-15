@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json.Serialization;
 using Nekolla.Nekostick.Contracts;
 using Nekostick.ServiceHost.Sync;
@@ -121,12 +122,35 @@ public sealed class RetiringServiceSettings
 }
 
 
+/// <summary>Contains GitHub App credentials for authenticating private release downloads.</summary>
+public sealed record GitHubAppSettings
+{
+    /// <summary>The placeholder returned by settings reads and accepted on writes to retain the stored key.</summary>
+    public const string RedactedPrivateKey = "********";
+
+    /// <summary>Gets the GitHub App ID.</summary>
+    [JsonPropertyName("appId")]
+    public long AppId { get; init; }
+
+    /// <summary>Gets the installation ID; when absent, the installation is resolved per repository.</summary>
+    [JsonPropertyName("installationId")]
+    public long? InstallationId { get; init; }
+
+    /// <summary>Gets the PEM-encoded RSA private key of the GitHub App.</summary>
+    [JsonPropertyName("privateKey")]
+    public string? PrivateKey { get; init; }
+}
+
 /// <summary>Contains asset-download mirror prefixes for one release provider.</summary>
 public sealed class ReleaseProviderSettings
 {
     /// <summary>Gets or sets mirror URL prefixes, tried in their configured order.</summary>
     [JsonPropertyName("mirrors")]
     public List<string>? Mirrors { get; set; } = new();
+
+    /// <summary>Gets or sets GitHub App credentials used for private repositories.</summary>
+    [JsonPropertyName("app")]
+    public GitHubAppSettings? App { get; set; }
 }
 
 /// <summary>Contains settings for reconciliation observability.</summary>
@@ -333,8 +357,59 @@ public sealed class SvchostSettings
                 }
             }
         }
+        if (ReleaseProviders is not null)
+        {
+            foreach (var pair in ReleaseProviders)
+            {
+                if (pair.Value?.App is { } app)
+                {
+                    var appError = ValidateGitHubAppSettings($"releaseProviders.{pair.Key}.app", app);
+                    if (appError is not null)
+                    {
+                        errors.Add(appError);
+                    }
+                }
+            }
+        }
+
 
         return errors;
+    }
+
+    /// <summary>Validates GitHub App credentials, optionally allowing the redaction placeholder.</summary>
+    internal static string? ValidateGitHubAppSettings(string path, GitHubAppSettings app, bool allowRedacted = false)
+    {
+        if (app.AppId <= 0)
+        {
+            return $"{path}.appId must be a positive integer.";
+        }
+
+        if (app.InstallationId is <= 0)
+        {
+            return $"{path}.installationId must be a positive integer.";
+        }
+
+        if (string.IsNullOrWhiteSpace(app.PrivateKey))
+        {
+            return $"{path}.privateKey is required.";
+        }
+
+        if (string.Equals(app.PrivateKey, GitHubAppSettings.RedactedPrivateKey, StringComparison.Ordinal))
+        {
+            return allowRedacted ? null : $"{path}.privateKey must not be the redaction placeholder.";
+        }
+
+        try
+        {
+            using var rsa = RSA.Create();
+            rsa.ImportFromPem(app.PrivateKey);
+        }
+        catch (Exception exception) when (exception is ArgumentException or CryptographicException)
+        {
+            return $"{path}.privateKey must be a PEM-encoded RSA private key.";
+        }
+
+        return null;
     }
 
     internal static void AddRetirement(

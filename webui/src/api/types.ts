@@ -10,8 +10,17 @@ export interface StatusResponse {
   configs: number
 }
 
+export interface GitHubAppSettings {
+  appId: number
+  installationId?: number
+  // Returned redacted as "********" by GET; send the marker back to retain the
+  // stored key, or a PEM string to replace it.
+  privateKey?: string
+}
+
 export interface ReleaseProviderSettings {
   mirrors: string[]
+  app?: GitHubAppSettings
 }
 
 export interface ReleaseProvidersSettings {

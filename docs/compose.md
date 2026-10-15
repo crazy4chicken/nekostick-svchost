@@ -80,7 +80,7 @@ source:
 - ZIP 内的根路径条目或解压后越出解压目录的路径会导致安装失败; 指向同一输出路径的重复文件条目也会失败.
 - 服务进程的 CWD 等于当前 service root, 不是 ZIP 解压目录; 随包资源应通过入口程序自身路径定位, 不要依赖 CWD. 具体路径见下文“路径解析”.
 
-GitHub provider 使用未认证的 `GET /repos/{owner}/{repo}/releases?per_page=100`, 只读取第一页最多 100 个 release, 不分页; 会跳过 draft, 但不排除 prerelease. 因不带认证, 只能读取公开仓库且受 GitHub unauthenticated API rate limits 限制. 每次 reconcile 都会对每个 GitHub release source 重新查询 metadata, 然后才检查本地 lock 是否可复用.
+GitHub provider 使用 `GET /repos/{owner}/{repo}/releases?per_page=100` 查询 metadata, 只读取第一页最多 100 个 release, 不分页; 会跳过 draft, 但不排除 prerelease. 每次 reconcile 都会对每个 GitHub release source 重新查询 metadata, 然后才检查本地 lock 是否可复用. 默认不带认证, 只能读取公开仓库且受 GitHub unauthenticated API rate limits 限制; 配置 GitHub App 凭据后 (见下文) 可读取 private 仓库, 并改用每 installation 5000 次/小时的认证配额.
 
 GitHub release asset 下载镜像在扩展设置的 `releaseProviders` group 中配置, 不是 compose 字段:
 
@@ -97,6 +97,31 @@ GitHub release asset 下载镜像在扩展设置的 `releaseProviders` group 中
 每个 mirror 是 URL 前缀, svchost 将其与 GitHub 提供的 asset 下载 URL 直接拼接, 按列表顺序尝试, 全部失败后尝试官方 asset URL. GitHub release metadata 始终直接请求 `https://api.github.com`. 该设置的 API 用法见 [管理 API 参考](api.md).
 
 mirror 接受 HTTP 和 HTTPS; HTTP 不提供传输加密. 显式 `source.sha256` 优先用于校验下载, 否则 GitHub asset digest 存在时使用该摘要; 两者都没有时, 首次下载没有上游完整性校验, 但同一 release identity 的后续重下载仍会与已有 lock SHA 比对.
+
+### Private 仓库: GitHub App 认证
+
+在 `releaseProviders.github` 中配置 `app` 后, svchost 以 GitHub App installation 身份访问 private 仓库:
+
+```json
+{
+  "releaseProviders": {
+    "github": {
+      "app": {
+        "appId": 123456,
+        "installationId": 456,
+        "privateKey": "-----BEGIN PRIVATE KEY-----\n..."
+      }
+    }
+  }
+}
+```
+
+- 准备工作: 创建一个 GitHub App, 权限只需 `Contents: read`; 将其安装到目标仓库所在的组织或账号; 记录 App ID 并生成下载 RSA private key (PEM).
+- `installationId` 可省略; 省略时 svchost 通过 `GET /repos/{owner}/{repo}/installation` 按仓库自动解析 installation, 同一个 App 安装在多个组织也能工作.
+- 认证生效后, metadata 查询携带 installation access token, asset 改经 API endpoint (`GET /repos/{owner}/{repo}/releases/assets/{id}`, `Accept: application/octet-stream`) 下载, 不再使用 `browser_download_url`; mirrors 对认证下载不生效, token 不会发送给任何 mirror 或重定向目标. 401/403 会立即失败 (不重试) 并提示检查 App 凭据与权限.
+- token 生命周期由 svchost 管理: 用 private key 签 RS256 JWT (9 分钟) 换取 installation token (1 小时), 内存缓存并在过期前 5 分钟刷新, 进程重启后重新获取.
+- 安全注意: private key 以明文存于 svchost settings; settings API 的 GET 只返回打码后的 `"********"`, 不会回显真实私钥. 请遵循最小权限: 只授予 `Contents: read`, 只安装到需要的仓库.
+
 
 ## 路径解析
 

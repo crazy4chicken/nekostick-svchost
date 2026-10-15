@@ -658,6 +658,116 @@ public sealed class SettingsApiTests
     }
 
     [Fact]
+    public async Task Put_roundtrips_github_app_settings_with_a_redacted_private_key()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var pem = CreatePrivateKeyPem();
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", CreateAppPayload(appId: 123456, installationId: 456, privateKey: pem)),
+            CancellationToken.None);
+
+        Assert.Equal(200, response.StatusCode);
+        using var document = await ReadJsonAsync(response);
+        Assert.Equal(
+            "********",
+            document.RootElement
+                .GetProperty("releaseProviders")
+                .GetProperty("github")
+                .GetProperty("app")
+                .GetProperty("privateKey")
+                .GetString());
+
+        var getResponse = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("GET", string.Empty),
+            CancellationToken.None);
+        using var getDocument = await ReadJsonAsync(getResponse);
+        var app = getDocument.RootElement
+            .GetProperty("releaseProviders")
+            .GetProperty("github")
+            .GetProperty("app");
+        Assert.Equal(123456, app.GetProperty("appId").GetInt64());
+        Assert.Equal(456, app.GetProperty("installationId").GetInt64());
+        Assert.Equal("********", app.GetProperty("privateKey").GetString());
+
+        var stored = await fixture.SettingsStore.ReadSettingsAsync(CancellationToken.None);
+        Assert.True(stored.IsSuccess);
+        Assert.Equal(pem, stored.Value!.Settings!.ReleaseProviders!["github"].App!.PrivateKey);
+    }
+
+    [Fact]
+    public async Task Put_retains_the_stored_private_key_when_the_redaction_marker_is_sent()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var pem = CreatePrivateKeyPem();
+        var setup = await fixture.SettingsStore.UpdateSettingsAsync(settings =>
+        {
+            settings.ReleaseProviders = new Dictionary<string, ReleaseProviderSettings>(StringComparer.Ordinal)
+            {
+                ["github"] = new ReleaseProviderSettings
+                {
+                    Mirrors = new List<string>(),
+                    App = new GitHubAppSettings { AppId = 123456, PrivateKey = pem }
+                }
+            };
+            return settings;
+        });
+        Assert.True(setup.IsSuccess);
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", CreateAppPayload(appId: 123456, installationId: null, privateKey: "********")),
+            CancellationToken.None);
+
+        Assert.Equal(200, response.StatusCode);
+        var stored = await fixture.SettingsStore.ReadSettingsAsync(CancellationToken.None);
+        Assert.True(stored.IsSuccess);
+        Assert.Equal(pem, stored.Value!.Settings!.ReleaseProviders!["github"].App!.PrivateKey);
+    }
+
+    [Fact]
+    public async Task Put_rejects_the_redaction_marker_without_a_stored_key()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var writesBefore = fixture.ConfigurationApi.WriteSettingsCallCount;
+
+        var response = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", CreateAppPayload(appId: 123456, installationId: null, privateKey: "********")),
+            CancellationToken.None);
+
+        Assert.Equal(422, response.StatusCode);
+        Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
+    }
+
+    [Fact]
+    public async Task Put_rejects_invalid_github_app_settings_with_a_bad_request()
+    {
+        using var fixture = await CreateFixtureAsync();
+        var writesBefore = fixture.ConfigurationApi.WriteSettingsCallCount;
+
+        var badAppId = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", CreateAppPayload(appId: 0, installationId: null, privateKey: CreatePrivateKeyPem())),
+            CancellationToken.None);
+        Assert.Equal(400, badAppId.StatusCode);
+        using var badAppIdDocument = await ReadJsonAsync(badAppId);
+        Assert.Contains(
+            "releaseProviders.github.app.appId",
+            badAppIdDocument.RootElement.GetProperty("error").GetProperty("message").GetString(),
+            StringComparison.Ordinal);
+
+        var badKey = await fixture.Handler.HandleStreamingAsync(
+            CreateRequest("PUT", CreateAppPayload(appId: 123456, installationId: null, privateKey: "not-a-pem")),
+            CancellationToken.None);
+        Assert.Equal(400, badKey.StatusCode);
+        using var badKeyDocument = await ReadJsonAsync(badKey);
+        Assert.Contains(
+            "releaseProviders.github.app.privateKey",
+            badKeyDocument.RootElement.GetProperty("error").GetProperty("message").GetString(),
+            StringComparison.Ordinal);
+
+        Assert.Equal(writesBefore, fixture.ConfigurationApi.WriteSettingsCallCount);
+    }
+
+    [Fact]
     public async Task Put_rejects_unknown_settings_groups_with_a_bad_request()
     {
         using var fixture = await CreateFixtureAsync();
@@ -728,6 +838,30 @@ public sealed class SettingsApiTests
         {
             ["github"] = new ReleaseProviderSettings { Mirrors = new List<string>(mirrors) }
         };
+
+    private static string CreatePrivateKeyPem()
+    {
+        using var rsa = RSA.Create(2048);
+        return rsa.ExportPkcs8PrivateKeyPem();
+    }
+
+    private static string CreateAppPayload(long appId, long? installationId, string privateKey) =>
+        JsonSerializer.Serialize(new
+        {
+            releaseProviders = new
+            {
+                github = new
+                {
+                    mirrors = Array.Empty<string>(),
+                    app = new
+                    {
+                        appId,
+                        installationId,
+                        privateKey
+                    }
+                }
+            }
+        });
 
     private static ExtensionStreamingRequest CreateRequest(
         string method,

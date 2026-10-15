@@ -26,7 +26,7 @@
 
 ## GitHub API 查询行为
 
-GitHub provider 使用未认证的 `GET /repos/{owner}/{repo}/releases?per_page=100`, 只读取第一页最多 100 个 release, 不分页; 会跳过 draft, 但不排除 prerelease. 因不带认证, 只能读取公开仓库且受 GitHub unauthenticated API rate limits 限制. 每次 reconcile 都会对每个 GitHub release source 重新查询 metadata, 然后才检查本地 lock 是否可复用.
+GitHub provider 使用 `GET /repos/{owner}/{repo}/releases?per_page=100` 查询 metadata, 只读取第一页最多 100 个 release, 不分页; 会跳过 draft, 但不排除 prerelease. 每次 reconcile 都会对每个 GitHub release source 重新查询 metadata, 然后才检查本地 lock 是否可复用. 默认不带认证, 只能读取公开仓库且受 GitHub unauthenticated API rate limits 限制; 部署方配置 GitHub App 凭据后 (见 [compose 参考](compose.md)) 可消费 private 仓库的 release, metadata 与 asset 下载都携带 installation access token, 限额为每 installation 5000 次/小时. 发布 private release 时无需额外步骤: asset 命名与 digest 规则不变, 部署方只需将 App 安装到该仓库并授予 `Contents: read`.
 
 ## Ref 与 asset version 规则
 
@@ -69,4 +69,4 @@ services:
 }
 ```
 
-`mirrors` 是 asset 下载 URL 前缀列表, 按顺序尝试后回退到 GitHub 官方 asset URL. GitHub API metadata 请求仍直连 `https://api.github.com`, 因此 mirror 只代理 asset 下载, 不代理 release 查询. Mirror 接受 HTTP 和 HTTPS, 但 HTTP 不加密; 显式 `source.sha256` 优先校验下载, 否则使用 GitHub asset digest (若存在). 两者都没有时, 首次下载没有上游完整性校验, 但同一 release identity 的后续重下载仍会与已有 lock SHA 比对. `PUT` 按 group 整体替换; 保留已有 provider 配置时, 请求中应包含完整的 `releaseProviders` group. 详见 [管理 API 参考](api.md).
+`mirrors` 是 asset 下载 URL 前缀列表, 按顺序尝试后回退到 GitHub 官方 asset URL. GitHub API metadata 请求仍直连 `https://api.github.com`, 因此 mirror 只代理 asset 下载, 不代理 release 查询. 配置 GitHub App 凭据后, asset 改经 API endpoint 认证下载, mirrors 不生效. Mirror 接受 HTTP 和 HTTPS, 但 HTTP 不加密; 显式 `source.sha256` 优先校验下载, 否则使用 GitHub asset digest (若存在). 两者都没有时, 首次下载没有上游完整性校验, 但同一 release identity 的后续重下载仍会与已有 lock SHA 比对. `PUT` 按 group 整体替换; 保留已有 provider 配置时, 请求中应包含完整的 `releaseProviders` group. 详见 [管理 API 参考](api.md).

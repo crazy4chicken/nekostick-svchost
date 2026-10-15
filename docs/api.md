@@ -93,10 +93,15 @@ Content-Type: application/json
 
 `releaseProviders` 的形状为 `{ "<provider>": { "mirrors": ["<URL prefix>"] } }`. 每个 mirror 必须是非空的绝对 HTTP 或 HTTPS URL, 且包含 host. Mirror URL 作为 asset 下载 URL 的前缀使用; HTTP 可用但不加密. 未知 group、无效 group 内容或无效 mirror 会返回 `400`.
 
+`github` provider 还可以包含可选的 `app` object, 用于以 GitHub App installation 身份访问 private 仓库: `{ "appId": 123456, "installationId": 456, "privateKey": "<PEM>" }`. `appId` 必须是正整数; `installationId` 可选且必须为正整数, 省略时按仓库自动解析 installation; `privateKey` 必须是 PEM 编码的 RSA 私钥. GET 永远返回打码后的 `"privateKey": "********"`; PUT 时提交 `"********"` 表示保留已存储的私钥, 若没有已存储的私钥则整体校验失败并返回 `422`. 省略 `app` 字段会移除 App 凭据. 无效字段返回 `400`, 错误路径形如 `releaseProviders.github.app.privateKey`. 配置 `app` 后, release metadata 查询携带 installation token, asset 经 API endpoint (`Accept: application/octet-stream`) 下载, mirrors 不适用于认证下载.
+
 provider key 不会与已注册的 provider 列表比对, 因此未知 key 可被 settings API 接受, 但对应 release source 会在同步时因 provider 不存在而失败. provider object 中未知字段会被 JSON deserializer 忽略; 省略 `mirrors` 时默认为空列表, 显式 `null` 会校验失败. 下载时显式 `source.sha256` 优先, 否则 GitHub asset digest 存在时使用该摘要; 两者都没有时首次下载没有上游完整性校验, 但同一 release identity 的后续重下载会校验已有 lock SHA.
 
 `releaseProviders` 仅影响 release asset 下载候选地址; 列表按配置顺序尝试, 然后回退到 provider 返回的官方 asset URL. GitHub release metadata 仍直接请求 GitHub API.
 
+`app.privateKey` 以明文存于 settings; GET 只返回打码占位符, 但任何持有管理 API key 的调用方都可以替换或移除该凭据. 建议 GitHub App 只授予 `Contents: read` 权限, 且只安装到需要的仓库.
+
 ## 校验与错误
 
 配置 YAML 校验失败以及 bootstrap key 请求体/`apiKey` 校验失败返回 `422`; settings JSON、group 或 mirror 校验失败返回 `400`. `{name}`、`{config}` 或 `{service}` 不符合 `^[a-z0-9][a-z0-9-]{0,62}$` 时返回 `404`. 配置名 `{name}`、`{config}` 还不能是 `global` (大小写不敏感); settings 校验将其报告为非法配置名, 对应 API 路径返回 `404`. 此保留规则只适用于配置名, 服务名 `global` 合法.
+

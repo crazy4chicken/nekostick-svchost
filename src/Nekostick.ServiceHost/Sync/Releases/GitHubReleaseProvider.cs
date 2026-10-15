@@ -1,9 +1,10 @@
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text.Json;
 
 namespace Nekostick.ServiceHost.Sync.Releases;
 
-/// <summary>Resolves GitHub releases through the unauthenticated REST API.</summary>
+/// <summary>Resolves GitHub releases through the REST API, optionally authenticated as a GitHub App installation.</summary>
 public sealed class GitHubReleaseProvider : IReleaseProvider
 {
     private const string ApiRoot = "https://api.github.com";
@@ -29,6 +30,7 @@ public sealed class GitHubReleaseProvider : IReleaseProvider
         string serviceId,
         string arch,
         string platform,
+        IReleaseProviderAuth? auth,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -46,6 +48,25 @@ public sealed class GitHubReleaseProvider : IReleaseProvider
         }
 
         var repositoryName = $"{owner}/{repository}";
+        string? bearerToken = null;
+        if (auth is not null)
+        {
+            try
+            {
+                bearerToken = await auth.GetTokenAsync(owner, repository, cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException exception)
+            {
+                return ReleaseProviderResult.Failure(
+                    $"GitHub App authentication for repository '{repositoryName}' failed: {exception.Message}");
+            }
+            catch (InvalidOperationException exception)
+            {
+                return ReleaseProviderResult.Failure(
+                    $"GitHub App authentication for repository '{repositoryName}' failed: {exception.Message}");
+            }
+        }
+
         var apiUrl = new Uri($"{ApiRoot}/repos/{owner}/{repository}/releases?per_page=100");
         List<GitHubRelease> releases;
         try
@@ -53,6 +74,10 @@ public sealed class GitHubReleaseProvider : IReleaseProvider
             using var request = new HttpRequestMessage(HttpMethod.Get, apiUrl);
             request.Headers.UserAgent.ParseAdd("nekostick-svchost");
             request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            if (bearerToken is not null)
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+            }
             using var response = await _httpClient.SendAsync(
                     request,
                     HttpCompletionOption.ResponseHeadersRead,
@@ -171,7 +196,10 @@ public sealed class GitHubReleaseProvider : IReleaseProvider
                 selected.Version,
                 selected.Asset.Name,
                 selected.Asset.DownloadUrl,
-                selected.Asset.Sha256),
+                selected.Asset.Sha256,
+                bearerToken is not null && selected.Asset.Id > 0
+                    ? $"{ApiRoot}/repos/{owner}/{repository}/releases/assets/{selected.Asset.Id}"
+                    : null),
             warnings);
     }
 
@@ -210,7 +238,10 @@ public sealed class GitHubReleaseProvider : IReleaseProvider
                     assets.Add(new GitHubAsset(
                         name,
                         ReadString(assetElement, "browser_download_url"),
-                        ReadSha256(ReadString(assetElement, "digest"))));
+                        ReadSha256(ReadString(assetElement, "digest")),
+                        assetElement.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.Number
+                            ? idElement.GetInt64()
+                            : 0));
                 }
             }
 
@@ -343,7 +374,7 @@ public sealed class GitHubReleaseProvider : IReleaseProvider
 
     private sealed record GitHubRelease(string Tag, string TargetCommitish, List<GitHubAsset> Assets);
 
-    private sealed record GitHubAsset(string Name, string? DownloadUrl, string? Sha256);
+    private sealed record GitHubAsset(string Name, string? DownloadUrl, string? Sha256, long Id);
 
     private sealed record AssetCandidate(GitHubAsset Asset, string Version);
 }
