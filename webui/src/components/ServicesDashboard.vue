@@ -10,11 +10,12 @@ import {
   NText,
   useMessage,
 } from 'naive-ui'
-import { PlayOutline, StopOutline, SyncOutline, WarningOutline } from '@vicons/ionicons5'
+import { DocumentTextOutline, PlayOutline, StopOutline, SyncOutline, WarningOutline } from '@vicons/ionicons5'
 import { computed, inject, onMounted, ref } from 'vue'
 import { ApiError, api } from '../api/client'
-import type { ManagedService } from '../api/types'
+import type { ConfigSummary, ManagedService } from '../api/types'
 import { absoluteTime, relativeTime } from '../format'
+import LogViewerModal from './LogViewerModal.vue'
 
 const message = useMessage()
 const handleApiError = inject<(err: unknown, fallback: string) => void>('handleApiError')!
@@ -23,6 +24,7 @@ const loading = ref(true)
 const services = ref<ManagedService[]>([])
 const pendingAction = ref('')
 const syncingName = ref('')
+const viewingLogs = ref<{ config: ConfigSummary; service: string } | null>(null)
 
 const grouped = computed(() => {
   const byConfig = new Map<string, ManagedService[]>()
@@ -33,6 +35,20 @@ const grouped = computed(() => {
   }
   return [...byConfig.entries()]
 })
+
+function openLogs(svc: ManagedService) {
+  viewingLogs.value = {
+    config: {
+      name: svc.config,
+      serviceScope: null,
+      strictSources: null,
+      services: [{ name: svc.service }],
+      lock: null,
+      lastSync: null,
+    },
+    service: svc.service,
+  }
+}
 
 async function load() {
   loading.value = true
@@ -235,6 +251,10 @@ onMounted(load)
                   <n-tag v-else size="tiny" :bordered="false">stopped</n-tag>
                 </td>
                 <td class="actions-col">
+                  <n-button size="tiny" quaternary @click="openLogs(svc)">
+                    <template #icon><n-icon><DocumentTextOutline /></n-icon></template>
+                    Logs
+                  </n-button>
                   <n-popconfirm
                     v-if="svc.enabled === false"
                     positive-text="Start"
@@ -289,6 +309,12 @@ onMounted(load)
         </div>
       </section>
     </template>
+    <LogViewerModal
+      :config="viewingLogs?.config ?? null"
+      :service="viewingLogs?.service ?? null"
+      @update:config="(v: ConfigSummary | null) => { if (v === null) viewingLogs = null }"
+    />
+
   </div>
 </template>
 

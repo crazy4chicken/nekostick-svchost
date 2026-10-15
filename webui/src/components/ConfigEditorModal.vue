@@ -2,16 +2,16 @@
 import {
   NAlert,
   NButton,
-  NDrawer,
-  NDrawerContent,
   NForm,
   NFormItem,
   NInput,
+  NModal,
   NSpin,
   NText,
+  useDialog,
   useMessage,
 } from 'naive-ui'
-import { inject, nextTick, onBeforeUnmount, ref, toRef, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, ref, toRef, watch } from 'vue'
 import { ApiError, api } from '../api/client'
 import type { ConfigSummary, SyncReport } from '../api/types'
 import { loadMonaco } from '../monaco/loader'
@@ -31,6 +31,7 @@ const emit = defineEmits<{
 }>()
 
 const message = useMessage()
+const dialog = useDialog()
 const handleApiError = inject<(err: unknown, fallback: string) => void>('handleApiError')!
 const editing = toRef(props, 'editing')
 
@@ -40,6 +41,16 @@ const editorLoading = ref(false)
 const editorSaving = ref(false)
 const editorError = ref('')
 const saveReport = ref<SyncReport | null>(null)
+
+// Snapshot of the last loaded/saved state, used to detect unsaved changes.
+const savedName = ref('')
+const savedYaml = ref('')
+
+const isDirty = computed(
+  () =>
+    editing.value !== null &&
+    (editorYaml.value !== savedYaml.value || editorName.value !== savedName.value),
+)
 
 const editorEl = ref<HTMLElement | null>(null)
 const editorFailed = ref(false)
@@ -110,6 +121,8 @@ watch(
     if (target === 'new') {
       editorName.value = ''
       editorYaml.value = 'services:\n'
+      savedName.value = ''
+      savedYaml.value = editorYaml.value
       editorLoading.value = false
       await initEditor()
       return
@@ -120,6 +133,8 @@ watch(
     try {
       const detail = await api.getConfig(target.name)
       editorYaml.value = detail.yaml
+      savedName.value = target.name
+      savedYaml.value = detail.yaml
     } catch (err) {
       handleApiError(err, 'Failed to load config')
       message.error(err instanceof ApiError ? err.message : 'Failed to load config')
@@ -133,6 +148,20 @@ watch(
   { immediate: true },
 )
 
+function requestClose() {
+  if (!isDirty.value) {
+    emit('update:editing', null)
+    return
+  }
+  dialog.warning({
+    title: 'Discard unsaved changes?',
+    content: 'This configuration has unsaved changes. Closing the editor now will discard them.',
+    positiveText: 'Discard changes',
+    negativeText: 'Keep editing',
+    onPositiveClick: () => emit('update:editing', null),
+  })
+}
+
 async function save() {
   editorSaving.value = true
   editorError.value = ''
@@ -140,6 +169,8 @@ async function save() {
     // Reconcile-level failures arrive as HTTP 200 with succeeded:false.
     const report = await api.putConfig(editorName.value, editorYaml.value)
     saveReport.value = report
+    savedName.value = editorName.value
+    savedYaml.value = editorYaml.value
     if (report.succeeded) {
       message.success(`Config "${editorName.value}" saved and reconciled.`)
     } else {
@@ -161,65 +192,68 @@ async function save() {
 </script>
 
 <template>
-  <n-drawer
+  <n-modal
     :show="editing !== null"
-    :width="640"
-    placement="right"
-    @update:show="(v: boolean) => !v && emit('update:editing', null)"
+    preset="card"
+    :title="editing === 'new' ? 'New configuration' : `Edit ${editorName}`"
+    class="editor-modal"
+    :mask-closable="false"
+    :close-on-esc="false"
+    closable
+    @mask-click="requestClose"
+    @update:show="(v: boolean) => !v && requestClose()"
   >
-    <n-drawer-content
-      :title="editing === 'new' ? 'New configuration' : `Edit ${editorName}`"
-      closable
-    >
-      <n-spin :show="editorLoading">
-        <n-form label-placement="top">
-          <n-form-item
-            label="Config name"
-            :validation-status="editing === 'new' && editorName && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(editorName) ? 'error' : undefined"
-            :feedback="editing === 'new' && editorName && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(editorName) ? 'Lowercase letters, digits and dashes; must start with a letter or digit.' : undefined"
-          >
+    <n-spin :show="editorLoading">
+      <n-form label-placement="top">
+        <n-form-item
+          label="Config name"
+          :validation-status="editing === 'new' && editorName && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(editorName) ? 'error' : undefined"
+          :feedback="editing === 'new' && editorName && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(editorName) ? 'Lowercase letters, digits and dashes; must start with a letter or digit.' : undefined"
+        >
+          <n-input
+            v-model:value="editorName"
+            :disabled="editing !== 'new'"
+            placeholder="my-config"
+          />
+        </n-form-item>
+        <n-form-item label="YAML">
+          <div class="yaml-editor-host">
+            <div v-show="!editorFailed" ref="editorEl" class="monaco-editor-container"></div>
             <n-input
-              v-model:value="editorName"
-              :disabled="editing !== 'new'"
-              placeholder="my-config"
+              v-if="editorFailed"
+              v-model:value="editorYaml"
+              type="textarea"
+              :rows="18"
+              class="yaml-editor"
+              placeholder="services:"
+              :input-props="{ spellcheck: 'false' }"
             />
-          </n-form-item>
-          <n-form-item label="YAML">
-            <div class="yaml-editor-host">
-              <div v-show="!editorFailed" ref="editorEl" class="monaco-editor-container"></div>
-              <n-input
-                v-if="editorFailed"
-                v-model:value="editorYaml"
-                type="textarea"
-                :rows="18"
-                class="yaml-editor"
-                placeholder="services:"
-                :input-props="{ spellcheck: 'false' }"
-              />
-            </div>
-          </n-form-item>
-          <n-alert v-if="editorFailed" type="warning" :bordered="false" class="editor-error">
-            Editor CDN unavailable; using the plain text editor.
-          </n-alert>
-        </n-form>
-
-        <n-alert v-if="editorError" type="error" :bordered="false" title="Validation failed" class="editor-error">
-          {{ editorError }}
+          </div>
+        </n-form-item>
+        <n-alert v-if="editorFailed" type="warning" :bordered="false" class="editor-error">
+          Editor CDN unavailable; using the plain text editor.
         </n-alert>
+      </n-form>
 
-        <template v-if="saveReport">
-          <n-text strong class="report-title">Sync report</n-text>
-          <SyncReportView :report="saveReport" />
-        </template>
-      </n-spin>
+      <n-alert v-if="editorError" type="error" :bordered="false" title="Validation failed" class="editor-error">
+        {{ editorError }}
+      </n-alert>
 
-      <template #footer>
+      <template v-if="saveReport">
+        <n-text strong class="report-title">Sync report</n-text>
+        <SyncReportView :report="saveReport" />
+      </template>
+    </n-spin>
+
+    <template #footer>
+      <div class="editor-footer">
+        <n-button quaternary @click="requestClose">Close</n-button>
         <n-button :disabled="!editorName || !editorYaml.trim()" :loading="editorSaving" type="primary" @click="save">
           Save &amp; reconcile
         </n-button>
-      </template>
-    </n-drawer-content>
-  </n-drawer>
+      </div>
+    </template>
+  </n-modal>
 </template>
 
 <style scoped>
@@ -228,7 +262,8 @@ async function save() {
 }
 .monaco-editor-container {
   width: 100%;
-  height: 430px;
+  height: 55vh;
+  min-height: 320px;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 3px;
 }
@@ -242,5 +277,17 @@ async function save() {
 .report-title {
   display: block;
   margin: 4px 0 8px;
+}
+.editor-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+</style>
+
+<style>
+/* Not scoped: n-modal preset="card" renders in a teleport target. */
+.editor-modal.n-card {
+  width: min(1080px, 92vw);
 }
 </style>

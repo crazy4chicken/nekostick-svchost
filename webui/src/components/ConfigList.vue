@@ -18,7 +18,7 @@ import { inject, onMounted, ref } from 'vue'
 import { ApiError, api, syncReportEntries } from '../api/client'
 import type { ConfigSummary } from '../api/types'
 import { absoluteTime, relativeTime } from '../format'
-import ConfigEditorDrawer from './ConfigEditorDrawer.vue'
+import ConfigEditorModal from './ConfigEditorModal.vue'
 import LogViewerModal from './LogViewerModal.vue'
 import SyncReportView from './SyncReportView.vue'
 
@@ -251,7 +251,7 @@ onMounted(load)
       </tbody>
     </n-table>
 
-    <ConfigEditorDrawer v-model:editing="editing" :on-saved="load" />
+    <ConfigEditorModal v-model:editing="editing" :on-saved="load" />
     <LogViewerModal v-model:config="viewingLogs" />
     <n-modal
       :show="viewingReport !== null"

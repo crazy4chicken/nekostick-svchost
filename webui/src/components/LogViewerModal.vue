@@ -5,7 +5,7 @@ import type { PropType, VNodeChild } from 'vue'
 import { ApiError, api } from '../api/client'
 import type { ConfigSummary, LogPage } from '../api/types'
 
-const props = defineProps<{ config: ConfigSummary | null }>()
+const props = defineProps<{ config: ConfigSummary | null; service?: string | null }>()
 const emit = defineEmits<{
   'update:config': [config: ConfigSummary | null]
 }>()
@@ -318,9 +318,11 @@ async function streamLive(
 }
 
 watch(
-  () => props.config,
-  (config) => {
-    selectedService.value = config?.services[0]?.name ?? null
+  () => [props.config, props.service] as const,
+  ([config, service]) => {
+    const names = config?.services.map((entry) => entry.name) ?? []
+    selectedService.value =
+      service && names.includes(service) ? service : (names[0] ?? null)
   },
   { immediate: true },
 )
